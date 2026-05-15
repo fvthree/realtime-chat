@@ -1,0 +1,23 @@
+# Backend
+backend/.gradle/
+backend/build/
+backend/out/
+backend/bin/
+backend/*.iml
+backend/.idea/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# E2E
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
+# OS / editor
+.DS_Store
+.vscode/
+*.log
