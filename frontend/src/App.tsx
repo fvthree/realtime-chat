@@ -1,0 +1,217 @@
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useWebSocket } from "./hooks/useWebSocket";
+import { useClockSync } from "./hooks/useClockSync";
+import { chatReducer, initialChatState } from "./state/chatReducer";
+import { getRoomIdFromUrl, loadOrCreateSenderId } from "./state/identity";
+import type {
+  LatencySample,
+  WireEvent,
+  WireHello,
+  WireMessage,
+  WirePing,
+  WireTypingStart,
+  WireTypingStop,
+} from "./types";
+
+import { TopBar } from "./components/TopBar";
+import { ConnectionStrip } from "./components/ConnectionStrip";
+import { MessageList } from "./components/MessageList";
+import { Composer } from "./components/Composer";
+import { LatencyHUD } from "./components/LatencyHUD";
+
+function makeTempId(): string {
+  return `tmp-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const MAX_SAMPLES = 200;
+
+export function App() {
+  const senderId = useMemo(loadOrCreateSenderId, []);
+  const roomId = useMemo(getRoomIdFromUrl, []);
+  const url = useMemo(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/ws/chat/${roomId}`;
+  }, [roomId]);
+
+  const [chat, dispatch] = useReducer(chatReducer, initialChatState);
+  const [samples, setSamples] = useState<LatencySample[]>([]);
+
+  // Refs let us read state inside event callbacks without re-creating them
+  // every render, which would tear down the WebSocket.
+  const senderIdRef = useRef(senderId);
+  const offsetRef = useRef<number | null>(null);
+
+  const pushSample = useCallback((s: LatencySample) => {
+    setSamples((prev) => {
+      const next = [...prev, s];
+      return next.length > MAX_SAMPLES ? next.slice(-MAX_SAMPLES) : next;
+    });
+  }, []);
+
+  // ── WebSocket and event dispatch ──────────────────────────────────────
+  const handleEvent = useCallback(
+    (event: WireEvent) => {
+      switch (event.type) {
+        case "msg": {
+          dispatch({ kind: "ack", serverMsg: event, selfSenderId: senderIdRef.current });
+
+          // Latency sample: was this our own echo, or a peer's message?
+          if (event.senderId === senderIdRef.current) {
+            // self round-trip: now - clientSendTs (we know our own clock)
+            const rtt = Date.now() - event.clientSendTs;
+            if (rtt >= 0 && rtt < 60000) {
+              pushSample({ ms: rtt, kind: "self", at: Date.now() });
+            }
+          } else if (offsetRef.current !== null) {
+            // peer one-way: localNow - (serverRecvTs - offset)
+            // serverRecvTs is in server time; convert to local time then subtract.
+            const serverRecvLocal = event.serverRecvTs - offsetRef.current;
+            const peerMs = Date.now() - serverRecvLocal;
+            if (peerMs >= 0 && peerMs < 60000) {
+              pushSample({ ms: peerMs, kind: "peer", at: Date.now() });
+            }
+          }
+          break;
+        }
+        case "pong":
+          clock.handlePong(event);
+          break;
+        case "typing_start":
+          dispatch({
+            kind: "typing-start",
+            senderId: event.senderId,
+            selfSenderId: senderIdRef.current,
+          });
+          break;
+        case "typing_stop":
+          dispatch({ kind: "typing-stop", senderId: event.senderId });
+          break;
+        case "presence":
+          dispatch({ kind: "presence", connected: event.connected });
+          break;
+        case "hello":
+        case "ping":
+          // Server-only events; ignore.
+          break;
+      }
+    },
+    // clock is defined just below; declared as `let` so the closure can resolve it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pushSample]
+  );
+
+  const { state, send } = useWebSocket({ url, onEvent: handleEvent });
+
+  const sendPing = useCallback(
+    (ping: WirePing) => send(ping),
+    [send]
+  );
+
+  const clock = useClockSync({
+    roomId,
+    senderId,
+    sendPing,
+    connectionOpen: state.kind === "open",
+  });
+
+  useEffect(() => {
+    offsetRef.current = clock.offsetMs;
+  }, [clock.offsetMs]);
+
+  // Reset chat state on a fresh reconnect (Stage 1 has no history replay).
+  useEffect(() => {
+    if (state.kind === "open") {
+      const hello: WireHello = { type: "hello", roomId, senderId };
+      send(hello);
+    }
+  }, [state.kind, roomId, senderId, send]);
+
+  const doSend = useCallback(
+    (text: string) => {
+      const tempId = makeTempId();
+      const clientSendTs = Date.now();
+      dispatch({ kind: "queue-send", tempId, senderId, text, clientSendTs });
+      const wire: WireMessage = {
+        type: "msg",
+        id: "",
+        tempId,
+        roomId,
+        senderId,
+        text,
+        clientSendTs,
+        serverRecvTs: 0,
+      };
+      const ok = send(wire);
+      if (!ok) dispatch({ kind: "fail", tempId });
+    },
+    [roomId, senderId, send]
+  );
+
+  const doRetry = useCallback(
+    (tempId: string) => {
+      const msg = chat.messages.find((m) => m.tempId === tempId);
+      if (!msg) return;
+      const clientSendTs = Date.now();
+      dispatch({ kind: "retry", tempId, clientSendTs });
+      const wire: WireMessage = {
+        type: "msg",
+        id: "",
+        tempId,
+        roomId,
+        senderId,
+        text: msg.text,
+        clientSendTs,
+        serverRecvTs: 0,
+      };
+      const ok = send(wire);
+      if (!ok) dispatch({ kind: "fail", tempId });
+    },
+    [chat.messages, roomId, senderId, send]
+  );
+
+  const doTypingStart = useCallback(() => {
+    const evt: WireTypingStart = { type: "typing_start", roomId, senderId };
+    send(evt);
+  }, [roomId, senderId, send]);
+
+  const doTypingStop = useCallback(() => {
+    const evt: WireTypingStop = { type: "typing_stop", roomId, senderId };
+    send(evt);
+  }, [roomId, senderId, send]);
+
+  // Compact HUD value for the top bar
+  const compactHud = useMemo(() => {
+    const selfP50 = (() => {
+      const subset = samples.filter((s) => s.kind === "self").map((s) => s.ms);
+      if (subset.length === 0) return null;
+      const sorted = [...subset].sort((a, b) => a - b);
+      return Math.round(sorted[Math.floor(sorted.length / 2)]!);
+    })();
+    return selfP50 == null ? null : `${selfP50}ms p50`;
+  }, [samples]);
+
+  return (
+    <div className="app">
+      <TopBar
+        roomId={roomId}
+        connected={chat.connected}
+        state={state}
+        hudCompact={compactHud}
+      />
+      <ConnectionStrip state={state} />
+      <MessageList
+        messages={chat.messages}
+        typing={chat.typing}
+        onRetry={doRetry}
+      />
+      <Composer
+        roomId={roomId}
+        disabled={state.kind !== "open"}
+        onSend={doSend}
+        onTypingStart={doTypingStart}
+        onTypingStop={doTypingStop}
+      />
+      <LatencyHUD samples={samples} syncing={clock.isSyncing} />
+    </div>
+  );
+}

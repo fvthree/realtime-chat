@@ -1,0 +1,92 @@
+:root {
+  /* Typography */
+  --font-sans: "Inter Variable", "SF Pro Text", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SF Mono", ui-monospace, monospace;
+
+  --font-size-base: 15px;
+  --font-size-meta: 12px;
+  --font-size-hud: 28px;
+  --font-size-room: 14px;
+  --line-height-base: 1.55;
+  --line-height-tight: 1.2;
+
+  /* Color (dark only Stage 1) */
+  --bg: #0e1014;
+  --surface: #15181e;
+  --surface-2: #1b1f27;
+  --ink: #e7e9ec;
+  --ink-dim: #8a8f98;
+  --ink-faint: #565b65;
+  --rule: #23272f;
+
+  --accent: #6ee7b7;
+  --accent-glow: rgba(110, 231, 183, 0.18);
+
+  --warn: #f59e0b;
+  --warn-glow: rgba(245, 158, 11, 0.15);
+
+  --danger: #ef4444;
+  --danger-glow: rgba(239, 68, 68, 0.15);
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Radii (minimal — no bubbly) */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+
+  /* Focus */
+  --focus-ring: 0 0 0 2px var(--accent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+}
+
+#root {
+  height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* Tabular figures wherever we show numbers that change */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}

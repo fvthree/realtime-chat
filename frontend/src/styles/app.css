@@ -1,0 +1,307 @@
+/* App layout: top bar + message list + composer, with HUD pinned bottom-right. */
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  position: relative;
+}
+
+/* ─── Top bar ───────────────────────────────────────────────────────── */
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg);
+}
+
+.top-bar__room {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-room);
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+
+.top-bar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--ink-dim);
+  font-size: var(--font-size-meta);
+}
+
+.presence-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.presence-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+.presence-count {
+  margin-left: var(--space-2);
+}
+
+.top-bar__hud-compact {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+}
+
+/* ─── Connection strip ──────────────────────────────────────────────── */
+
+.conn-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-meta);
+  font-family: var(--font-mono);
+}
+.conn-strip--disconnected {
+  background: var(--danger-glow);
+  color: var(--danger);
+  border-bottom: 1px solid var(--danger);
+}
+.conn-strip--reconnecting {
+  background: var(--warn-glow);
+  color: var(--warn);
+  border-bottom: 1px solid var(--warn);
+}
+
+/* ─── Message list ──────────────────────────────────────────────────── */
+
+.message-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.message-list__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ink-faint);
+  gap: var(--space-2);
+}
+.message-list__empty-arrow {
+  font-size: 18px;
+  animation: nudge 2.4s ease-in-out infinite;
+}
+
+@keyframes nudge {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%      { transform: translateY(4px); opacity: 1; }
+}
+
+.message {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+.message__sender {
+  font-weight: 500;
+  color: var(--ink);
+}
+.message__ts {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.message__body {
+  grid-column: 1 / -1;
+  margin-left: 0;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.message__status {
+  font-size: var(--font-size-meta);
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+}
+
+.message__status--pending {
+  color: var(--ink-dim);
+}
+.message__status--pending::before {
+  content: "● ";
+  color: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.message__status--failed {
+  color: var(--danger);
+}
+.message__status--failed::before {
+  content: "✕ ";
+}
+.message__retry {
+  background: none;
+  border: none;
+  color: var(--danger);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-left: 4px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
+.typing-strip {
+  font-style: italic;
+  color: var(--ink-faint);
+  font-size: var(--font-size-meta);
+  padding: var(--space-1) 0;
+}
+.typing-strip::before,
+.typing-strip::after {
+  content: " ─── ";
+  color: var(--ink-faint);
+}
+
+/* ─── Composer ──────────────────────────────────────────────────────── */
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--rule);
+  background: var(--surface);
+}
+.composer__input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  color: var(--ink);
+}
+.composer__input::placeholder {
+  color: var(--ink-faint);
+}
+.composer__input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.composer__send {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+}
+.composer__send:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.composer__send:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ─── Latency HUD ───────────────────────────────────────────────────── */
+
+.hud {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-size-meta);
+  color: var(--ink-dim);
+  min-width: 220px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+.hud__title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.hud__row {
+  display: grid;
+  grid-template-columns: 48px repeat(3, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.hud__row + .hud__row {
+  margin-top: 4px;
+}
+.hud__label {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.hud__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.hud__cell-label {
+  color: var(--ink-faint);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.hud__cell-value {
+  font-size: var(--font-size-hud);
+  line-height: 1;
+  color: var(--ink);
+  margin-top: 2px;
+}
+.hud__cell-value--tier-green  { color: var(--accent); text-shadow: 0 0 12px var(--accent-glow); }
+.hud__cell-value--tier-amber  { color: var(--warn); }
+.hud__cell-value--tier-red    { color: var(--danger); }
+.hud__cell-value--tier-none   { color: var(--ink-faint); }
+
+.hud__sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+  margin-top: var(--space-2);
+}
+.hud__spark-bar {
+  flex: 1;
+  background: var(--ink-dim);
+  border-radius: 1px;
+  min-height: 1px;
+}
+
+.hud--syncing .hud__cell-value {
+  color: var(--ink-faint);
+}
