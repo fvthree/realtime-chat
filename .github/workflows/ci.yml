@@ -24,7 +24,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build + test
-        run: gradle test --no-daemon
+        run: ./gradlew test --no-daemon
 
   frontend:
     name: frontend (typecheck + unit)

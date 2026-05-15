@@ -23,6 +23,9 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("io.projectreactor:reactor-test")
+    // Gradle 9+ no longer pulls junit-platform-launcher transitively; declare it
+    // explicitly so the test runtime classpath can start the JUnit Platform engine.
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.withType<Test> {
