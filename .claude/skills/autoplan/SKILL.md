@@ -1,0 +1,1 @@
+/Users/Apple/conductor/repos/realtime-chat/.claude/skills/gstack/autoplan/SKILL.md
