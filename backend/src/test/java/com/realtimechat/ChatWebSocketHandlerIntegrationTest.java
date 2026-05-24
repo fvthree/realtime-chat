@@ -228,13 +228,10 @@ class ChatWebSocketHandlerIntegrationTest {
 
         senderSession.dispose();
 
-        // Wait for the async DB write to complete before replaying history.
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
-                .pollDelay(50, java.util.concurrent.TimeUnit.MILLISECONDS)
-                .untilAsserted(() -> assertThat(
-                        messageRepository.findLast50ByRoomId("replay-test").collectList().block())
-                        .anyMatch(e -> "replay-me".equals(e.text())));
+        // Give the async DB write time to complete before the replayer joins.
+        // A plain sleep avoids calling .block() on a reactor chain from an Awaitility
+        // thread, which can starve the shared Netty event loop in the full test suite.
+        Thread.sleep(500);
 
         // A new client joining the same room should receive the message from history.
         List<String> replayReceived = new CopyOnWriteArrayList<>();
