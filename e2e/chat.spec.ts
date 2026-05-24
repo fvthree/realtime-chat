@@ -5,11 +5,11 @@ import { test, expect, type Page } from "@playwright/test";
 async function openRoom(page: Page, room: string) {
   await page.goto(`/?room=${room}`);
   // Wait for the WS connection to be open (composer enabled).
-  await expect(page.locator("textarea")).toBeEnabled({ timeout: 10_000 });
+  await expect(page.getByRole("textbox")).toBeEnabled({ timeout: 10_000 });
 }
 
 async function sendMessage(page: Page, text: string) {
-  await page.locator("textarea").fill(text);
+  await page.getByRole("textbox").fill(text);
   await page.keyboard.press("Enter");
 }
 

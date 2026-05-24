@@ -31,5 +31,15 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **Anonymous-only or accounts?** — Stage 4 picks one; Stage 1 ships with random guest names persisted in localStorage.
 
 ## Testing gaps to close before /ship
-- [ ] **Reconnect-storm regression test** — kill server, restart within 2s, assert clean recovery (Playwright). Identified as critical gap in eng review.
-- [ ] **Two-tab E2E with HUD assertion** — Playwright two-context test verifying message arrives in tab B with HUD value < 100ms on localhost.
+- [x] **Two-tab E2E with HUD assertion** — Playwright two-context test verifying message arrives in tab B with HUD value < 100ms on localhost. `e2e/chat.spec.ts` added in v0.2.0.0.
+- [ ] **Reconnect-storm regression test** — E2E test written in `e2e/chat.spec.ts` but skipped in CI (`test.skip(!!process.env.CI)`). Needs a backend process-management fixture before it can run in CI.
+
+## Code quality deferred from v0.2.0.0 (P2 — fix before any deployment)
+- [ ] **application.yml hardcoded credentials** — `username: postgres` / `password: postgres` committed plaintext. Change to `${DB_USERNAME:postgres}` / `${DB_PASSWORD:postgres}` env-var pattern before Stage 4 or any non-localhost deployment. Flagged in pre-landing review.
+- [ ] **No server-side message text length cap** — `ChatWebSocketHandler.java:140` only guards blank text; Netty allows up to 64 KB frames which persist unchecked to the `TEXT` column. Add `m.text().length() > 10_000` guard alongside the blank check; mirror with `maxLength={10000}` on the `<input>` in Composer.tsx.
+- [ ] **Room ID max-length mismatch** — `identity.ts:37` enforces `/^[a-z0-9-]{1,32}$/` (32 chars) while `ChatWebSocketHandler.java:206` allows up to 64 chars. Standardize on 64 in the frontend regex, or on 32 in the backend constant. Choose one before Stage 5 multi-instance work.
+
+## Test gaps deferred from v0.2.0.0 (P1 — close before Stage 4)
+- [ ] **chatReducer: presence + reset action coverage** — `chatReducer.test.ts` has no tests for the `presence` (updates `chat.connected`) or `reset` actions. Add at least one test each; the file is otherwise well-covered.
+- [ ] **Send-when-disconnected → "failed" state test** — App.tsx dispatches `{kind:"fail",tempId}` when `useWebSocket.send()` returns false, but there is no integration-level test that opens a socket, closes it, sends a message, and asserts the message enters `status:"failed"` state. Wire-level gap; the unit tests in `useWebSocket.test.ts` cover the `send()=false` path in isolation.
+- [ ] **Retry-failed-message integration test** — `doRetry` in App.tsx re-dispatches and re-sends, but no test exercises the full round-trip: send → fail → retry → ack. A `WebTestClient` integration test or a Vitest mock-WebSocket test would close this.

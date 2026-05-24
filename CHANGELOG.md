@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/) (extended to 4 digits: MAJOR.MINOR.PATCH.MICRO).
 
+## [0.2.0.0] - 2026-05-24
+
+### Added
+
+- **Message persistence.** Chat history is now stored in Postgres via R2DBC. Messages survive server restarts. Joining a room replays the last 50 messages in order, deduplicated client-side by server id.
+- **History/live race gap closed.** A `ConnectableFlux` replay buffer (1024 events) starts capturing room events before the history DB query, so messages emitted during the fetch are not lost. Client deduplicates any overlap.
+- **NTP-style clock sync.** `useClockSync` now runs a sliding window of 20 ping samples, rejects statistical outliers (σ ≥ 2), and takes the median offset. A fresh 5-ping burst re-syncs every 30 seconds. Peer-side HUD latency is now accurate to within the NTP jitter of the local network.
+- **Room-scoped sender identity.** `localStorage` key changed from a shared `senderId` to `realtime-chat:senderId:{roomId}`. Two tabs on different rooms now get independent guest names.
+- **Integration tests for presence and history replay.** New `ChatWebSocketHandlerIntegrationTest` cases: presence count increments on join and decrements on leave, `hello` triggers a presence broadcast, and persisted messages are replayed on a fresh join.
+- **E2E test scaffold.** `e2e/chat.spec.ts` + `playwright.config.ts` added. Two-tab HUD assertion (`< 100 ms` on localhost) runs locally. Reconnect-storm test is written but skipped in CI pending a process-management fixture.
+- **Unit test coverage.** New test files for `useWebSocket` (12 cases: backoff schedule, state machine, send-when-closed, cleanup), `useClockSync` (9 cases: offset math, outlier rejection, periodic resync, sliding-window cap, reset), and `identity.ts` (10 cases: room-scoped localStorage key, fallback, validation). Backend gets 4 new `RoomRegistryTest` cases covering `evictIfEmpty` (basic eviction, active-subscriber guard, stale-object guard, concurrent race).
+- **Docker Compose.** `docker-compose.yml` added for one-command Postgres 16-alpine setup on port 5432.
+
+### Fixed
+
+- **SELF RTT HUD inflated after page reload.** History replay messages have `tempId: null` and a stale `clientSendTs`. The RTT calculation now guards `event.tempId !== null`, so history echoes no longer pollute the latency sample set.
+- **Ghost-typing on disconnect.** `ChatWebSocketHandler.doFinally` now emits a `TypingStop` event for any session that was actively typing when the WebSocket closed, preventing the typing indicator from sticking in peer tabs.
+- **Room ID normalization.** URL parameter is lowercased before validation, so `?room=MyRoom` and `?room=myroom` resolve to the same room.
+- **Concurrent room eviction safety.** `RoomRegistry.evictIfEmpty` now uses `ConcurrentHashMap.compute()` to atomically check subscriber count and remove, preventing accidental eviction of a room that received a concurrent new joiner.
+
+### Changed
+
+- `useClockSync` from a 5-ping one-shot estimate to a 20-sample sliding window with σ-outlier rejection and 30 s periodic resync.
+
 ## [0.1.0.0] - 2026-05-15
 
 ### Added

@@ -228,8 +228,13 @@ class ChatWebSocketHandlerIntegrationTest {
 
         senderSession.dispose();
 
-        // Give the async DB write a moment to complete.
-        Thread.sleep(200);
+        // Wait for the async DB write to complete before replaying history.
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .pollDelay(50, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> assertThat(
+                        messageRepository.findLast50ByRoomId("replay-test").collectList().block())
+                        .anyMatch(e -> "replay-me".equals(e.text())));
 
         // A new client joining the same room should receive the message from history.
         List<String> replayReceived = new CopyOnWriteArrayList<>();

@@ -125,7 +125,7 @@ export function App() {
     handlePongRef.current = clock.handlePong;
   }, [clock.handlePong]);
 
-  // Reset chat state on a fresh reconnect (Stage 1 has no history replay).
+  // Send hello on reconnect so the server broadcasts presence and replays history.
   useEffect(() => {
     if (state.kind === "open") {
       const hello: WireHello = { type: "hello", roomId, senderId };
