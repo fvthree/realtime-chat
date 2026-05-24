@@ -1,7 +1,10 @@
 package com.realtimechat;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Sinks;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -9,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *                              │
  *                              ▼
  *                       ┌─────────────┐
- *                       │ sink.tryEmit │
+ *                       │  room.emit  │
  *                       └──────┬──────┘
  *                              │ multicast()
  *                              │ onBackpressureBuffer(1024)
@@ -24,13 +27,27 @@ import java.util.concurrent.atomic.AtomicInteger;
  * specific failure mode (a stuck tab) for prevention of OOM and silent drops.
  */
 public final class Room {
+    private static final Logger log = LoggerFactory.getLogger(Room.class);
+
     public final String id;
-    public final Sinks.Many<ChatEvent> sink;
+    final Sinks.Many<ChatEvent> sink;
     public final AtomicInteger subscriberCount = new AtomicInteger(0);
+    // sessionId → senderId; tracks who is typing so disconnect can emit TypingStop.
+    final ConcurrentHashMap<String, String> typingBySession = new ConcurrentHashMap<>();
 
     public Room(String id) {
         this.id = id;
         this.sink = Sinks.many().multicast().onBackpressureBuffer(1024, false);
+    }
+
+    void emit(ChatEvent event) {
+        sink.emitNext(event, (signalType, emitResult) -> {
+            if (emitResult == Sinks.EmitResult.FAIL_NON_SERIALIZED) {
+                return true; // concurrent emit — spin and retry
+            }
+            log.warn("emit failed for room {}: {}", id, emitResult);
+            return false;
+        });
     }
 
     public int incrementSubscribers() {

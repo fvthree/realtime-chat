@@ -7,9 +7,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
+import reactor.core.Disposable;
+import reactor.core.publisher.ConnectableFlux;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -17,14 +20,19 @@ import java.util.UUID;
  *
  *           session.receive() ─────► parse JSON ─────► handleInbound()
  *                                                      │  (side-effects:
- *                                                      │   sink.tryEmitNext,
+ *                                                      │   persist to DB,
+ *                                                      │   room.emit,
  *                                                      │   pong reply via personal sink)
  *                                                      ▼
  *                                              Room.sink ──┐
  *                                                          │ multicast()
  *                                          ┌───────────────┘
  *                                          │
- *                              merge personal pongs ───────► session.send()
+ *                       history (DB) ──► concat ──────► session.send()
+ *
+ *  History is replayed before live: Flux.concat(history, live) ensures the
+ *  last 50 DB messages arrive first, then the live stream picks up seamlessly.
+ *  Duplicates are deduped client-side by server message id.
  *
  *  CRITICAL: handle() must return Mono.zip(inboundDrain, outboundDrain). Returning
  *  only one terminates the duplex stream. This is the #1 WebFlux WebSocket footgun.
@@ -35,10 +43,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
     private final RoomRegistry registry;
     private final ObjectMapper json;
+    private final MessageRepository messageRepository;
 
-    public ChatWebSocketHandler(RoomRegistry registry, ObjectMapper json) {
+    public ChatWebSocketHandler(RoomRegistry registry, ObjectMapper json, MessageRepository messageRepository) {
         this.registry = registry;
         this.json = json;
+        this.messageRepository = messageRepository;
     }
 
     @Override
@@ -46,8 +56,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         String roomId = extractRoomId(session);
         Room room = registry.getOrCreate(roomId);
 
-        // Personal sink: receives pongs and other unicast-to-this-session events
-        // (e.g. the Hello echo back). Distinct from room.sink which is shared.
+        // Personal sink: receives pongs and other unicast-to-this-session events.
+        // Distinct from room.sink which is shared across all subscribers.
         var personalSink = reactor.core.publisher.Sinks.many()
                 .unicast()
                 .<ChatEvent>onBackpressureBuffer();
@@ -55,15 +65,36 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         room.incrementSubscribers();
         broadcastPresence(room);
 
-        Flux<ChatEvent> outboundEvents = Flux.merge(
-                room.sink.asFlux(),
-                personalSink.asFlux()
-        ).onBackpressureBuffer(1024,
-                dropped -> log.warn("dropping outbound event for slow subscriber {}: {}",
-                        session.getId(), dropped));
+        // History: last 50 persisted messages, oldest-first.
+        Flux<ChatEvent> history = messageRepository.findLast50ByRoomId(roomId)
+                .map(e -> (ChatEvent) new Message(
+                        e.id().toString(),
+                        null,            // tempId: null for replayed messages
+                        e.roomId(),
+                        e.senderId(),
+                        e.text(),
+                        e.clientSendTs(),
+                        e.serverRecvTs()
+                ))
+                .onErrorResume(err -> {
+                    log.warn("history fetch failed for room {}: {}", roomId, err.getMessage());
+                    return Flux.empty();
+                });
+
+        // Connect a replay buffer BEFORE the history query starts. Flux.concat only subscribes
+        // to the live stream after history completes; without this buffer, messages emitted to
+        // the room during the DB fetch are permanently lost for this joiner. The replay buffer
+        // captures those events so concat can drain them immediately after history completes.
+        // Client deduplicates by server message id, so any overlap with history is harmless.
+        ConnectableFlux<ChatEvent> live = Flux.merge(room.sink.asFlux(), personalSink.asFlux())
+                .onBackpressureBuffer(1024,
+                        dropped -> log.warn("dropping outbound event for slow subscriber {}: {}",
+                                session.getId(), dropped))
+                .replay(1024);
+        Disposable liveConnection = live.connect();
 
         Mono<Void> outboundDrain = session.send(
-                outboundEvents
+                Flux.concat(history, live)
                         .map(this::toJsonOrEmpty)
                         .filter(s -> !s.isEmpty())
                         .map(session::textMessage)
@@ -78,9 +109,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
         return Mono.zip(inboundDrain, outboundDrain)
                 .doFinally(sig -> {
+                    liveConnection.dispose();
+                    // Ghost-typing fix: emit TypingStop for the disconnecting session.
+                    String typingSenderId = room.typingBySession.remove(session.getId());
+                    if (typingSenderId != null) {
+                        room.emit(new TypingStop(room.id, typingSenderId));
+                    }
                     int remaining = room.decrementSubscribers();
                     personalSink.tryEmitComplete();
                     broadcastPresence(room);
+                    if (remaining == 0) {
+                        registry.evictIfEmpty(room.id, room);
+                    }
                     log.debug("session {} closed, {} subscribers remain in room {}",
                             session.getId(), remaining, room.id);
                 })
@@ -97,6 +137,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
 
         return switch (evt) {
             case Message m -> {
+                if (m.senderId() == null || m.senderId().isBlank() || m.text() == null || m.text().isBlank()) {
+                    log.warn("dropping malformed message with blank senderId or text from session {}", session.getId());
+                    yield Mono.empty();
+                }
                 Message stamped = new Message(
                         UUID.randomUUID().toString(),
                         m.tempId(),
@@ -106,7 +150,20 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         m.clientSendTs(),
                         now
                 );
-                emitToRoom(room, stamped);
+                // Persist fire-and-forget; broadcast immediately regardless of DB outcome.
+                messageRepository.save(new MessageEntity(
+                        UUID.fromString(stamped.id()),
+                        stamped.roomId(),
+                        stamped.senderId(),
+                        stamped.text(),
+                        stamped.clientSendTs(),
+                        stamped.serverRecvTs(),
+                        Instant.ofEpochMilli(now)
+                )).subscribe(
+                        saved -> {},
+                        err -> log.warn("persist failed for message {}: {}", stamped.id(), err.getMessage())
+                );
+                room.emit(stamped);
                 yield Mono.empty();
             }
             case Ping p -> {
@@ -116,11 +173,16 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 yield Mono.empty();
             }
             case TypingStart t -> {
-                emitToRoom(room, t);
+                if (t.senderId() == null || t.senderId().isBlank()) {
+                    yield Mono.empty();
+                }
+                room.typingBySession.put(session.getId(), t.senderId());
+                room.emit(t);
                 yield Mono.empty();
             }
             case TypingStop t -> {
-                emitToRoom(room, t);
+                room.typingBySession.remove(session.getId());
+                room.emit(t);
                 yield Mono.empty();
             }
             case Hello h -> {
@@ -132,22 +194,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         };
     }
 
-    private void emitToRoom(Room room, ChatEvent event) {
-        var result = room.sink.tryEmitNext(event);
-        if (result.isFailure()) {
-            log.warn("emit failed for room {}: {}", room.id, result);
-        }
-    }
-
     private void broadcastPresence(Room room) {
-        emitToRoom(room, new Presence(room.id, room.currentSubscribers()));
+        room.emit(new Presence(room.id, room.currentSubscribers()));
     }
 
     private String extractRoomId(WebSocketSession session) {
         String path = session.getHandshakeInfo().getUri().getPath();
         int idx = path.lastIndexOf('/');
         if (idx < 0 || idx == path.length() - 1) return "lobby";
-        return path.substring(idx + 1);
+        String candidate = path.substring(idx + 1);
+        if (candidate.length() > 64 || !candidate.matches("[a-z0-9-]+")) return "lobby";
+        return candidate;
     }
 
     private java.util.Optional<ChatEvent> parseEvent(String payload) {
