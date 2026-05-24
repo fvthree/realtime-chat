@@ -60,8 +60,9 @@ export function App() {
           dispatch({ kind: "ack", serverMsg: event, selfSenderId: senderIdRef.current });
 
           // Latency sample: was this our own echo, or a peer's message?
-          if (event.senderId === senderIdRef.current) {
-            // self round-trip: now - clientSendTs (we know our own clock)
+          if (event.senderId === senderIdRef.current && event.tempId !== null) {
+            // self round-trip: now - clientSendTs (we know our own clock).
+            // Skip history replays (tempId === null) — their clientSendTs is stale.
             const rtt = Date.now() - event.clientSendTs;
             if (rtt >= 0 && rtt < 60000) {
               pushSample({ ms: rtt, kind: "self", at: Date.now() });
