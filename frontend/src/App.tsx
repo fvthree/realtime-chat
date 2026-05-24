@@ -9,6 +9,7 @@ import type {
   WireHello,
   WireMessage,
   WirePing,
+  WirePong,
   WireTypingStart,
   WireTypingStop,
 } from "./types";
@@ -26,8 +27,8 @@ function makeTempId(): string {
 const MAX_SAMPLES = 200;
 
 export function App() {
-  const senderId = useMemo(loadOrCreateSenderId, []);
   const roomId = useMemo(getRoomIdFromUrl, []);
+  const senderId = useMemo(() => loadOrCreateSenderId(roomId), [roomId]);
   const url = useMemo(() => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/ws/chat/${roomId}`;
@@ -40,6 +41,9 @@ export function App() {
   // every render, which would tear down the WebSocket.
   const senderIdRef = useRef(senderId);
   const offsetRef = useRef<number | null>(null);
+  // handlePong is stable (empty deps in useClockSync) but we store it in a ref
+  // so handleEvent never needs clock in its dependency array.
+  const handlePongRef = useRef<(pong: WirePong) => void>(() => {});
 
   const pushSample = useCallback((s: LatencySample) => {
     setSamples((prev) => {
@@ -74,7 +78,7 @@ export function App() {
           break;
         }
         case "pong":
-          clock.handlePong(event);
+          handlePongRef.current(event);
           break;
         case "typing_start":
           dispatch({
@@ -95,8 +99,6 @@ export function App() {
           break;
       }
     },
-    // clock is defined just below; declared as `let` so the closure can resolve it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [pushSample]
   );
 
@@ -117,6 +119,10 @@ export function App() {
   useEffect(() => {
     offsetRef.current = clock.offsetMs;
   }, [clock.offsetMs]);
+
+  useEffect(() => {
+    handlePongRef.current = clock.handlePong;
+  }, [clock.handlePong]);
 
   // Reset chat state on a fresh reconnect (Stage 1 has no history replay).
   useEffect(() => {

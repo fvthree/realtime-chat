@@ -6,10 +6,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Stage 1: rooms are created lazily on first join and never evicted.
- * Acceptable trade-off for a localhost demo. Stage 2 will add either
- * Caffeine TTL eviction or refcount-based removal when subscriberCount
- * hits zero.
+ * Rooms are created lazily on first join and evicted when the last subscriber
+ * disconnects. compute() is used for eviction so the subscriber-count check and
+ * map removal are atomic with respect to getOrCreate's computeIfAbsent, preventing
+ * a room with a concurrent new joiner from being incorrectly evicted.
  */
 @Component
 public class RoomRegistry {
@@ -17,6 +17,13 @@ public class RoomRegistry {
 
     public Room getOrCreate(String roomId) {
         return rooms.computeIfAbsent(roomId, Room::new);
+    }
+
+    public void evictIfEmpty(String roomId, Room room) {
+        // compute() is per-key atomic: interleaves safely with computeIfAbsent.
+        // Only remove if this is still the same room object AND it has no subscribers.
+        rooms.compute(roomId, (k, existing) ->
+                (existing == room && room.currentSubscribers() == 0) ? null : existing);
     }
 
     public int roomCount() {

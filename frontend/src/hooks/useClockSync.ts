@@ -2,19 +2,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { WirePing, WirePong } from "../types";
 
 /**
- * 5-ping clock-sync handshake. Stage 1 estimate:
+ * Stage 3 NTP-style clock sync over a sliding window.
  *
- *   offset = serverRecvTs - (clientPingTs + rtt/2)
+ * Four-timestamp offset estimate (NTP):
+ *   offset = ((serverRecvTs - clientPingTs) + (serverSendTs - clientRecvTs)) / 2
+ *          = serverMid - clientMid
  *
- * We take the median across samples to reject outliers. Stage 3 replaces this
- * with full NTP-style 4-timestamp solve over a sliding window.
+ * Samples accumulate in a sliding window (WINDOW_SIZE). σ-outlier rejection
+ * guards against sudden network spikes inflating the estimate. Median of the
+ * surviving samples is the published offsetMs.
  *
- * Until the first sample arrives, offset is null and the HUD shows "—".
+ * A periodic resync (RESYNC_INTERVAL_MS) keeps the window fresh over long sessions.
  */
 
 const SAMPLE_TARGET = 5;
 const PING_INTERVAL_MS = 60;
 const PING_TIMEOUT_MS = 3000;
+const RESYNC_INTERVAL_MS = 30_000;
+const WINDOW_SIZE = 20;
+const OUTLIER_SIGMA = 2;
 
 export type ClockSync = {
   offsetMs: number | null;
@@ -33,6 +39,23 @@ export type UseClockSyncOptions = {
   sendPing: (ping: WirePing) => boolean;
   connectionOpen: boolean;
 };
+
+function computeOffsetFromSamples(samples: number[]): number | null {
+  if (samples.length === 0) return null;
+
+  let filtered = samples;
+  if (samples.length >= 5) {
+    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+    const variance =
+      samples.reduce((sum, v) => sum + (v - mean) ** 2, 0) / samples.length;
+    const sd = Math.sqrt(variance);
+    const within = samples.filter((v) => Math.abs(v - mean) <= OUTLIER_SIGMA * sd);
+    if (within.length > 0) filtered = within;
+  }
+
+  const sorted = [...filtered].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
 
 export function useClockSync({
   roomId,
@@ -62,23 +85,17 @@ export function useClockSync({
     const now = Date.now();
     const rtt = now - sentAt;
 
-    // Estimate offset (server clock vs local clock):
-    // assume the server received and sent at roughly its midpoint
     const serverMid = (pong.serverRecvTs + pong.serverSendTs) / 2;
     const clientMid = (sentAt + now) / 2;
     const offset = serverMid - clientMid;
 
-    offsetSamples.current = [...offsetSamples.current, offset].slice(-SAMPLE_TARGET);
-    setRttSamples((prev) => [...prev, rtt].slice(-SAMPLE_TARGET));
-
-    if (offsetSamples.current.length >= 1) {
-      const sorted = [...offsetSamples.current].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)]!;
-      setOffsetMs(median);
-    }
+    const next = [...offsetSamples.current, offset].slice(-WINDOW_SIZE);
+    offsetSamples.current = next;
+    setRttSamples((prev) => [...prev, rtt].slice(-WINDOW_SIZE));
+    setOffsetMs(computeOffsetFromSamples(next));
   }, []);
 
-  // Initial handshake: send SAMPLE_TARGET pings spaced PING_INTERVAL_MS apart.
+  // Initial handshake: SAMPLE_TARGET pings spaced PING_INTERVAL_MS apart.
   useEffect(() => {
     if (!connectionOpen) return;
     reset();
@@ -91,15 +108,9 @@ export function useClockSync({
         if (cancelled) return;
         const clientPingTs = Date.now();
         pendingPings.current.set(clientPingTs, clientPingTs);
-        const ok = sendPing({
-          type: "ping",
-          roomId,
-          senderId,
-          clientPingTs,
-        });
+        const ok = sendPing({ type: "ping", roomId, senderId, clientPingTs });
         if (!ok) pendingPings.current.delete(clientPingTs);
 
-        // Time out stale pings so the map doesn't leak.
         const cleanup = window.setTimeout(() => {
           pendingPings.current.delete(clientPingTs);
         }, PING_TIMEOUT_MS);
@@ -113,6 +124,30 @@ export function useClockSync({
       timers.forEach(clearTimeout);
     };
   }, [connectionOpen, roomId, senderId, sendPing, reset]);
+
+  // Periodic resync: one ping every RESYNC_INTERVAL_MS to keep the window fresh.
+  useEffect(() => {
+    if (!connectionOpen) return;
+
+    let cleanupTimer: number | undefined;
+
+    const id = window.setInterval(() => {
+      const clientPingTs = Date.now();
+      pendingPings.current.set(clientPingTs, clientPingTs);
+      const ok = sendPing({ type: "ping", roomId, senderId, clientPingTs });
+      if (!ok) pendingPings.current.delete(clientPingTs);
+
+      window.clearTimeout(cleanupTimer);
+      cleanupTimer = window.setTimeout(() => {
+        pendingPings.current.delete(clientPingTs);
+      }, PING_TIMEOUT_MS);
+    }, RESYNC_INTERVAL_MS);
+
+    return () => {
+      clearInterval(id);
+      clearTimeout(cleanupTimer);
+    };
+  }, [connectionOpen, roomId, senderId, sendPing]);
 
   return { offsetMs, rttSamples, isSyncing, handlePong, reset };
 }

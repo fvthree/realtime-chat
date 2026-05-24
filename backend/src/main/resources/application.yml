@@ -5,6 +5,16 @@ spring:
   application:
     name: realtime-chat-backend
 
+  r2dbc:
+    url: r2dbc:postgresql://localhost:5432/realtimechat
+    username: postgres
+    password: postgres
+
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
 logging:
   level:
     com.realtimechat: INFO

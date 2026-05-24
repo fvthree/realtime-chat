@@ -16,8 +16,12 @@ import java.util.Map;
 public class WebSocketConfig {
 
     @Bean
-    public ChatWebSocketHandler chatWebSocketHandler(RoomRegistry registry, ObjectMapper json) {
-        return new ChatWebSocketHandler(registry, json);
+    public ChatWebSocketHandler chatWebSocketHandler(
+            RoomRegistry registry,
+            ObjectMapper json,
+            MessageRepository messageRepository
+    ) {
+        return new ChatWebSocketHandler(registry, json, messageRepository);
     }
 
     @Bean

@@ -3,11 +3,15 @@
 Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred to later stages on purpose.
 
 ## Stage 2 — Persistence
-- [ ] **Empty-room eviction** — currently `RoomRegistry` leaks `Room` entries forever. Either Caffeine TTL (10min expireAfterAccess) or subscriber-refcount → remove. Pick once persistence lands (TTL is easier with R2DBC).
+- [x] **Empty-room eviction** — subscriber-refcount based: `RoomRegistry.evictIfEmpty` called in `doFinally` when count hits 0. Uses `ConcurrentHashMap.compute()` to atomically check subscriber count and remove, preventing eviction of a room that already has a new joiner.
 - [ ] **Message ordering under fan-out** — once Stage 5 multi-instance arrives, decide between client-side sort by `serverRecvTs` vs server monotonic id from Postgres.
+- [x] **senderId is not room-scoped in localStorage** — key is now `realtime-chat:senderId:{roomId}`, scoped per room.
 
 ## Stage 3 — Honest HUD
-- [ ] **Full NTP-style clock sync** — current Stage 1 estimate uses serverRecvTs/serverSendTs midpoint. Replace with sliding-window median offset every 30s, reject outliers > 2σ.
+- [x] **Full NTP-style clock sync** — sliding-window NTP (WINDOW_SIZE=20, σ-outlier rejection, 30s periodic resync) in `useClockSync.ts`. Median of surviving samples published as `offsetMs`.
+
+## Before Stage 5 deploy
+- [ ] **WebSocket protocol-level keepalive** — application-level clock-sync pings are JSON frames, not RFC 6455 protocol-level Ping/Pong frames. Fly.io's load balancer kills idle WebSocket connections at ~60s. Before Stage 5, configure a Netty-level WebSocket ping interval (3-line Spring bean or `application.yml` property). Without this, idle connections silently die behind the proxy.
 
 ## Stage 4 — Auth
 - [ ] **WebSocket auth context propagation** — Spring Security reactive `SecurityWebFilterChain` does NOT automatically populate the WebSocket session's principal. Need to wire `ReactorContextWebFilter` + read `session.getHandshakeInfo().getPrincipal()` inside the handler. Common footgun.
