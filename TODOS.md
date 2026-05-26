@@ -10,6 +10,10 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 ## Stage 3 — Honest HUD
 - [x] **Full NTP-style clock sync** — sliding-window NTP (WINDOW_SIZE=20, σ-outlier rejection, 30s periodic resync) in `useClockSync.ts`. Median of surviving samples published as `offsetMs`.
 
+## Before Stage 4 (auth)
+- [ ] **DB migration tooling** — `schema.sql` with `CREATE TABLE IF NOT EXISTS` handles initial creation but silently no-ops on column additions. Stage 4 will need an `auth_id` or `sender_principal` column. Add Flyway (`org.flywaydb:flyway-database-postgresql`) or Liquibase before Stage 4 starts; rename `schema.sql` to `V1__init.sql`. Without this, schema changes require manual `ALTER TABLE` and production deploys are fragile.
+- [ ] **`pendingPings` key collision under Firefox `privacy.resistFingerprinting`** — `useClockSync.ts` uses `clientPingTs` (ms-resolution `Date.now()`) as the correlation key for the pending pings map. Firefox with `privacy.resistFingerprinting` clamps `Date.now()` to 100ms resolution; two burst pings within the same 100ms window overwrite each other's `sentAt`, corrupting the RTT sample. Fix: use a separate monotonic `pingId` counter as the map key; pass it alongside `clientPingTs` in the wire protocol. Low priority for localhost demo; relevant before Stage 7 mobile/PWA where Firefox mobile users may have this enabled.
+
 ## Before Stage 5 deploy
 - [ ] **WebSocket protocol-level keepalive** — application-level clock-sync pings are JSON frames, not RFC 6455 protocol-level Ping/Pong frames. Fly.io's load balancer kills idle WebSocket connections at ~60s. Before Stage 5, configure a Netty-level WebSocket ping interval (3-line Spring bean or `application.yml` property). Without this, idle connections silently die behind the proxy.
 
@@ -18,6 +22,7 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **Per-IP + per-user rate limit** on the WebSocket inbound stream.
 
 ## Stage 7 — Mobile / polish
+- [x] **HUD overlaps composer on all viewports** — `position: fixed; bottom: 24px` placed the HUD inside the composer region. Fixed: `bottom: 80px` globally; HUD hidden below 640px via `@media` (compact metric still shows in top bar). Fixed by /qa on kolkata-v1, 2026-05-26.
 - [ ] **iOS Safari aggressive socket closure on tab background** — backgrounded > ~30s kills the WS. Plan: visibilitychange listener triggers immediate reconnect on foreground.
 - [ ] **Light theme toggle** — system-pref detect + manual override stored in localStorage.
 - [ ] **Failed-message browser notification** — sound + page-title flash when a message fails while the tab is backgrounded.
@@ -35,6 +40,10 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **Reconnect-storm regression test** — E2E test written in `e2e/chat.spec.ts` but skipped in CI (`test.skip(!!process.env.CI)`). Needs a backend process-management fixture before it can run in CI.
 
 ## Code quality deferred from v0.2.0.0 (P2 — fix before any deployment)
+- [ ] **TypingStop senderId impersonation** — any session can send `{"type":"typing_stop","senderId":"victimUser"}` to suppress another user's typing indicator. Client-supplied `senderId` is not validated against the session's stored identity in `typingBySession`. Fix: verify `t.senderId()` matches `room.typingBySession.get(session.getId())` before emitting, or wait for Stage 4 auth which provides a real session principal. (The blank-senderId guard was added, but sender identity is still client-controlled.)
+- [ ] **Fire-and-forget save() has no timeout** — `messageRepository.save(...).subscribe(...)` is an untracked subscription with no timeout. Under R2DBC connection pool exhaustion, save calls queue up indefinitely. Add `.timeout(Duration.ofSeconds(5))` before `.subscribe()` to bound the window. Low priority until Stage 5 multi-instance or real load.
+
+
 - [ ] **application.yml hardcoded credentials** — `username: postgres` / `password: postgres` committed plaintext. Change to `${DB_USERNAME:postgres}` / `${DB_PASSWORD:postgres}` env-var pattern before Stage 4 or any non-localhost deployment. Flagged in pre-landing review.
 - [ ] **No server-side message text length cap** — `ChatWebSocketHandler.java:140` only guards blank text; Netty allows up to 64 KB frames which persist unchecked to the `TEXT` column. Add `m.text().length() > 10_000` guard alongside the blank check; mirror with `maxLength={10000}` on the `<input>` in Composer.tsx.
 - [ ] **Room ID max-length mismatch** — `identity.ts:37` enforces `/^[a-z0-9-]{1,32}$/` (32 chars) while `ChatWebSocketHandler.java:206` allows up to 64 chars. Standardize on 64 in the frontend regex, or on 32 in the backend constant. Choose one before Stage 5 multi-instance work.

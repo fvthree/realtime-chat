@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/) (extended to 4 digits: MAJOR.MINOR.PATCH.MICRO).
 
+## [0.2.1.0] - 2026-05-26
+
+### Fixed
+
+- **`created_at` tiebreaker precision.** `ChatWebSocketHandler` was setting `created_at` via `Instant.ofEpochMilli(System.currentTimeMillis())` — the same millisecond precision as `server_recv_ts`. The `ORDER BY created_at DESC` tiebreaker in `MessageRepository` was therefore useless for two messages arriving in the same millisecond. Changed to `Instant.now()` for nanosecond precision (Postgres stores microseconds), so the tiebreaker is effective.
+- **`TypingStop` missing senderId guard.** A client could send `{"type":"typing_stop","senderId":""}` and the server would broadcast a `typing_stop` event with a blank `senderId`, potentially confusing peer UI state. Added the same null/blank guard that `TypingStart` already had.
+
+### Tests
+
+- **`typingStartWithBlankSenderIdIsDropped`** — new integration test verifying that a `TypingStart` with `senderId=""` is silently dropped and never broadcast to observers.
+- **`savePersistFailureDoesNotKillBroadcast`** — new resilience test verifying that a mocked `MessageRepository.save()` failure does not prevent the message from being broadcast to room subscribers (fire-and-forget contract).
+
 ## [0.2.0.0] - 2026-05-24
 
 ### Added

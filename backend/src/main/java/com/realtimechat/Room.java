@@ -22,9 +22,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       session A          session B           session C
  *       (Flux out)         (Flux out)          (Flux out)
  *
- * A slow subscriber whose outbound buffer overflows is disconnected by the
- * handler; the client reconnects with exponential backoff. This trades one
- * specific failure mode (a stuck tab) for prevention of OOM and silent drops.
+ * A slow subscriber whose outbound buffer overflows loses events (silent drop with warn log)
+ * but stays connected. The handler's replay(1024) window per connection bounds per-connection
+ * memory. Stage 5 can layer in session.close() from the drop callback if forced-reconnect
+ * semantics are desired.
  */
 public final class Room {
     private static final Logger log = LoggerFactory.getLogger(Room.class);

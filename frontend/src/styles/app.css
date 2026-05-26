@@ -227,7 +227,7 @@
 
 .hud {
   position: fixed;
-  bottom: var(--space-5);
+  bottom: 80px; /* above the composer (70px) + 10px gap */
   right: var(--space-5);
   background: var(--surface);
   border: 1px solid var(--rule);
@@ -304,4 +304,13 @@
 
 .hud--syncing .hud__cell-value {
   color: var(--ink-faint);
+}
+
+/* Hide the detailed HUD panel on narrow viewports — the compact HUD in the
+   top bar still shows the key p50 metric. Prevents overlap with the message
+   list and composer on phones (< 640 px). */
+@media (max-width: 639px) {
+  .hud {
+    display: none;
+  }
 }
