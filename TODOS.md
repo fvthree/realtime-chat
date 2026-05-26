@@ -40,7 +40,7 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **Reconnect-storm regression test** — E2E test written in `e2e/chat.spec.ts` but skipped in CI (`test.skip(!!process.env.CI)`). Needs a backend process-management fixture before it can run in CI.
 
 ## Code quality deferred from v0.2.0.0 (P2 — fix before any deployment)
-- [ ] **TypingStop senderId impersonation** — any session can send `{"type":"typing_stop","senderId":"victimUser"}` to suppress another user's typing indicator. Client-supplied `senderId` is not validated against the session's stored identity in `typingBySession`. Fix: verify `t.senderId()` matches `room.typingBySession.get(session.getId())` before emitting, or wait for Stage 4 auth which provides a real session principal. (The blank-senderId guard was added, but sender identity is still client-controlled.)
+- [x] **TypingStop senderId impersonation** — fixed: TypingStop handler now uses the server-stored senderId from `typingBySession` and ignores the client-supplied value entirely. A client can no longer suppress another user's typing indicator by sending `{"type":"typing_stop","senderId":"victimUser"}`. (kolkata-v1, 2026-05-27)
 - [ ] **Fire-and-forget save() has no timeout** — `messageRepository.save(...).subscribe(...)` is an untracked subscription with no timeout. Under R2DBC connection pool exhaustion, save calls queue up indefinitely. Add `.timeout(Duration.ofSeconds(5))` before `.subscribe()` to bound the window. Low priority until Stage 5 multi-instance or real load.
 
 

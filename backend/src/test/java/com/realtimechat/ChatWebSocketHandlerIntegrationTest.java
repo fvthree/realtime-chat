@@ -1,18 +1,11 @@
 package com.realtimechat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
@@ -26,34 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class ChatWebSocketHandlerIntegrationTest {
-
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
-            .withDatabaseName("realtimechat")
-            .withUsername("postgres")
-            .withPassword("postgres");
-
-    @DynamicPropertySource
-    static void r2dbcProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.r2dbc.url", () -> String.format(
-                "r2dbc:postgresql://%s:%d/%s",
-                postgres.getHost(),
-                postgres.getMappedPort(5432),
-                postgres.getDatabaseName()));
-        registry.add("spring.r2dbc.username", postgres::getUsername);
-        registry.add("spring.r2dbc.password", postgres::getPassword);
-        registry.add("spring.sql.init.mode", () -> "always");
-    }
-
-    @LocalServerPort int port;
-    @Autowired ObjectMapper json;
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    private URI uri(String room) {
-        return URI.create("ws://localhost:" + port + "/ws/chat/" + room);
-    }
+class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -231,7 +197,8 @@ class ChatWebSocketHandlerIntegrationTest {
         // Give the async DB write time to complete before the replayer joins.
         // A plain sleep avoids calling .block() on a reactor chain from an Awaitility
         // thread, which can starve the shared Netty event loop in the full test suite.
-        Thread.sleep(500);
+        // 2000ms provides headroom for loaded CI runners and Testcontainers cold-start.
+        Thread.sleep(2000);
 
         // A new client joining the same room should receive the message from history.
         List<String> replayReceived = new CopyOnWriteArrayList<>();
@@ -372,6 +339,54 @@ class ChatWebSocketHandlerIntegrationTest {
 
         assertThat(observed)
                 .noneMatch(s -> s.contains("\"type\":\"typing_start\""));
+
+        observerSession.dispose();
+    }
+
+    @Test
+    void typingStopWithBlankSenderIdAfterTypingStartClearsIndicator() throws Exception {
+        // Regression test for: blank-senderId TypingStop removes session from typingBySession
+        // but previously skipped room.emit, leaving ghost typing in all peers. The fix uses
+        // the server-stored senderId (from typingBySession) instead of the client-supplied one.
+        WebSocketClient typer = new ReactorNettyWebSocketClient();
+        WebSocketClient observer = new ReactorNettyWebSocketClient();
+        URI uri = uri("typing-blank-stop-test");
+
+        List<String> observed = new CopyOnWriteArrayList<>();
+
+        Disposable observerSession = observer.execute(uri, session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(observed::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Typer sends TypingStart with valid senderId, then TypingStop with blank senderId.
+        typer.execute(uri, session ->
+                Mono.fromCallable(() -> json.writeValueAsString(
+                                new TypingStart("typing-blank-stop-test", "typerA")))
+                        .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
+                        .then(Mono.delay(Duration.ofMillis(100)))
+                        .then(Mono.fromCallable(() -> json.writeValueAsString(
+                                        new TypingStop("typing-blank-stop-test", "")))
+                                .flatMap(p -> session.send(Mono.just(session.textMessage(p)))))
+                        .then()
+        ).block(Duration.ofSeconds(5));
+
+        // Observer must see typing_start followed by typing_stop with the server-stored senderId.
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> {
+                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_start\"")
+                            && s.contains("\"senderId\":\"typerA\""));
+                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
+                            && s.contains("\"senderId\":\"typerA\""));
+                });
 
         observerSession.dispose();
     }

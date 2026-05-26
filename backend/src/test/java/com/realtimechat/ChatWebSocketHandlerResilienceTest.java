@@ -1,19 +1,12 @@
 package com.realtimechat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
@@ -36,37 +29,12 @@ import static org.mockito.Mockito.when;
  */
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-class ChatWebSocketHandlerResilienceTest {
-
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
-            .withDatabaseName("realtimechat")
-            .withUsername("postgres")
-            .withPassword("postgres");
-
-    @DynamicPropertySource
-    static void r2dbcProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.r2dbc.url", () -> String.format(
-                "r2dbc:postgresql://%s:%d/%s",
-                postgres.getHost(),
-                postgres.getMappedPort(5432),
-                postgres.getDatabaseName()));
-        registry.add("spring.r2dbc.username", postgres::getUsername);
-        registry.add("spring.r2dbc.password", postgres::getPassword);
-        registry.add("spring.sql.init.mode", () -> "always");
-    }
+class ChatWebSocketHandlerResilienceTest extends AbstractChatWebSocketTest {
 
     // MockBean replaces the real repo — onErrorResume in the handler must catch the error
     // and allow the client to join with empty history instead of crashing the session.
     @MockBean
     MessageRepository messageRepository;
-
-    @LocalServerPort int port;
-    @Autowired ObjectMapper json;
-
-    private URI uri(String room) {
-        return URI.create("ws://localhost:" + port + "/ws/chat/" + room);
-    }
 
     @Test
     void historyFetchFailureStillJoinsRoom() {
