@@ -22,6 +22,7 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **Per-IP + per-user rate limit** on the WebSocket inbound stream.
 
 ## Stage 7 — Mobile / polish
+- [x] **HUD overlaps composer on all viewports** — `position: fixed; bottom: 24px` placed the HUD inside the composer region. Fixed: `bottom: 80px` globally; HUD hidden below 640px via `@media` (compact metric still shows in top bar). Fixed by /qa on kolkata-v1, 2026-05-26.
 - [ ] **iOS Safari aggressive socket closure on tab background** — backgrounded > ~30s kills the WS. Plan: visibilitychange listener triggers immediate reconnect on foreground.
 - [ ] **Light theme toggle** — system-pref detect + manual override stored in localStorage.
 - [ ] **Failed-message browser notification** — sound + page-title flash when a message fails while the tab is backgrounded.
