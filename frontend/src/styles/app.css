@@ -305,3 +305,12 @@
 .hud--syncing .hud__cell-value {
   color: var(--ink-faint);
 }
+
+/* Hide the detailed HUD panel on narrow viewports — the compact HUD in the
+   top bar still shows the key p50 metric. Prevents overlap with the message
+   list and composer on phones (< 640 px). */
+@media (max-width: 639px) {
+  .hud {
+    display: none;
+  }
+}
