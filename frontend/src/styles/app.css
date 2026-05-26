@@ -227,7 +227,7 @@
 
 .hud {
   position: fixed;
-  bottom: var(--space-5);
+  bottom: 80px; /* above the composer (70px) + 10px gap */
   right: var(--space-5);
   background: var(--surface);
   border: 1px solid var(--rule);
