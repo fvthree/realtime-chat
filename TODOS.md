@@ -10,6 +10,10 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 ## Stage 3 — Honest HUD
 - [x] **Full NTP-style clock sync** — sliding-window NTP (WINDOW_SIZE=20, σ-outlier rejection, 30s periodic resync) in `useClockSync.ts`. Median of surviving samples published as `offsetMs`.
 
+## Before Stage 4 (auth)
+- [ ] **DB migration tooling** — `schema.sql` with `CREATE TABLE IF NOT EXISTS` handles initial creation but silently no-ops on column additions. Stage 4 will need an `auth_id` or `sender_principal` column. Add Flyway (`org.flywaydb:flyway-database-postgresql`) or Liquibase before Stage 4 starts; rename `schema.sql` to `V1__init.sql`. Without this, schema changes require manual `ALTER TABLE` and production deploys are fragile.
+- [ ] **`pendingPings` key collision under Firefox `privacy.resistFingerprinting`** — `useClockSync.ts` uses `clientPingTs` (ms-resolution `Date.now()`) as the correlation key for the pending pings map. Firefox with `privacy.resistFingerprinting` clamps `Date.now()` to 100ms resolution; two burst pings within the same 100ms window overwrite each other's `sentAt`, corrupting the RTT sample. Fix: use a separate monotonic `pingId` counter as the map key; pass it alongside `clientPingTs` in the wire protocol. Low priority for localhost demo; relevant before Stage 7 mobile/PWA where Firefox mobile users may have this enabled.
+
 ## Before Stage 5 deploy
 - [ ] **WebSocket protocol-level keepalive** — application-level clock-sync pings are JSON frames, not RFC 6455 protocol-level Ping/Pong frames. Fly.io's load balancer kills idle WebSocket connections at ~60s. Before Stage 5, configure a Netty-level WebSocket ping interval (3-line Spring bean or `application.yml` property). Without this, idle connections silently die behind the proxy.
 

@@ -249,4 +249,94 @@ class ChatWebSocketHandlerIntegrationTest {
 
         replaySession.dispose();
     }
+
+    @Test
+    void typingStartAndStopAreBroadcastToOtherClients() throws Exception {
+        WebSocketClient sender = new ReactorNettyWebSocketClient();
+        WebSocketClient observer = new ReactorNettyWebSocketClient();
+        URI uri = uri("typing-test");
+
+        List<String> observed = new CopyOnWriteArrayList<>();
+
+        Disposable observerSession = observer.execute(uri, session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(observed::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Send typing_start, then typing_stop.
+        sender.execute(uri, session ->
+                Mono.fromCallable(() -> json.writeValueAsString(
+                                new TypingStart("typing-test", "userA")))
+                        .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
+                        .then(Mono.delay(Duration.ofMillis(100)))
+                        .then(Mono.fromCallable(() -> json.writeValueAsString(
+                                        new TypingStop("typing-test", "userA")))
+                                .flatMap(p -> session.send(Mono.just(session.textMessage(p)))))
+                        .then()
+        ).block(Duration.ofSeconds(5));
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> {
+                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_start\"")
+                            && s.contains("\"senderId\":\"userA\""));
+                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
+                            && s.contains("\"senderId\":\"userA\""));
+                });
+
+        observerSession.dispose();
+    }
+
+    @Test
+    void ghostTypingIsCleanedUpWhenSenderDisconnects() throws Exception {
+        WebSocketClient typer = new ReactorNettyWebSocketClient();
+        WebSocketClient observer = new ReactorNettyWebSocketClient();
+        URI uri = uri("ghost-typing-test");
+
+        List<String> observed = new CopyOnWriteArrayList<>();
+
+        Disposable observerSession = observer.execute(uri, session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(observed::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Typer connects, sends typing_start, then disconnects without sending typing_stop.
+        Disposable typerSession = typer.execute(uri, session ->
+                Mono.fromCallable(() -> json.writeValueAsString(
+                                new TypingStart("ghost-typing-test", "typerA")))
+                        .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
+                        .then()
+        ).subscribe();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"typing_start\"")
+                                && s.contains("\"senderId\":\"typerA\"")));
+
+        // Disconnect without typing_stop — server must auto-emit typing_stop.
+        typerSession.dispose();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
+                                && s.contains("\"senderId\":\"typerA\"")));
+
+        observerSession.dispose();
+    }
 }

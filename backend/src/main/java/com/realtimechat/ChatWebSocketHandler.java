@@ -86,10 +86,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // the room during the DB fetch are permanently lost for this joiner. The replay buffer
         // captures those events so concat can drain them immediately after history completes.
         // Client deduplicates by server message id, so any overlap with history is harmless.
+        // replay(1024) is the per-connection event buffer. No additional onBackpressureBuffer needed here —
+        // room.sink already has its own 1024-element buffer (see Room.java). A second buffer here just delays
+        // the drop log without changing behaviour; events that exceed the replay window are silently dropped
+        // (slow subscriber stays connected with gaps, not disconnected — see Room.java Javadoc).
         ConnectableFlux<ChatEvent> live = Flux.merge(room.sink.asFlux(), personalSink.asFlux())
-                .onBackpressureBuffer(1024,
-                        dropped -> log.warn("dropping outbound event for slow subscriber {}: {}",
-                                session.getId(), dropped))
                 .replay(1024);
         Disposable liveConnection = live.connect();
 
@@ -100,9 +101,11 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         .map(session::textMessage)
         );
 
+        // concatMap (not flatMap) preserves per-session message ordering.
+        // flatMap would silently reorder messages if handleInbound ever becomes async (e.g., Stage 4 auth check).
         Mono<Void> inboundDrain = session.receive()
                 .map(WebSocketMessage::getPayloadAsText)
-                .flatMap(payload -> parseEvent(payload)
+                .concatMap(payload -> parseEvent(payload)
                         .map(evt -> handleInbound(evt, room, session, personalSink))
                         .orElseGet(Mono::empty))
                 .then();

@@ -46,7 +46,7 @@ cd frontend && npm run typecheck
 
 ## Key architectural decisions
 
-- **`Sinks.many().multicast().onBackpressureBuffer(1024)`** per room, slow-subscriber disconnect on overflow. Trades a stuck tab for no OOM, no silent drops.
+- **`Sinks.many().multicast().onBackpressureBuffer(1024)`** per room. Slow-subscriber overflow drops events (warn log) but leaves the session open. Bounds per-room memory; Stage 5 can add forced disconnect from the drop callback.
 - **`Mono.zip(inboundDrain, outboundDrain)`** in `ChatWebSocketHandler.handle` — the #1 WebFlux WebSocket footgun if you only return one side.
 - **Optimistic UI with tempId reconciliation** — sender sees own message instantly; server echo replaces in-place using React key=tempId so no remount/flicker.
 - **Latency HUD tiers** locked at <30ms green / 30–100 amber / >100 red (supports the "sub-50ms feel" claim).
