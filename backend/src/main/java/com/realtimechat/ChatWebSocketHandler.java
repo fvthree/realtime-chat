@@ -161,7 +161,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         stamped.text(),
                         stamped.clientSendTs(),
                         stamped.serverRecvTs(),
-                        Instant.ofEpochMilli(now)
+                        Instant.now()
                 )).subscribe(
                         saved -> {},
                         err -> log.warn("persist failed for message {}: {}", stamped.id(), err.getMessage())
@@ -185,7 +185,9 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             }
             case TypingStop t -> {
                 room.typingBySession.remove(session.getId());
-                room.emit(t);
+                if (t.senderId() != null && !t.senderId().isBlank()) {
+                    room.emit(t);
+                }
                 yield Mono.empty();
             }
             case Hello h -> {

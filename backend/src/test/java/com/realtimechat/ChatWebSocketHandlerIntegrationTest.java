@@ -339,4 +339,40 @@ class ChatWebSocketHandlerIntegrationTest {
 
         observerSession.dispose();
     }
+
+    @Test
+    void typingStartWithBlankSenderIdIsDropped() throws Exception {
+        WebSocketClient sender = new ReactorNettyWebSocketClient();
+        WebSocketClient observer = new ReactorNettyWebSocketClient();
+        URI uri = uri("typing-blank-id-test");
+
+        List<String> observed = new CopyOnWriteArrayList<>();
+
+        Disposable observerSession = observer.execute(uri, session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(observed::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Send TypingStart with blank senderId — server guard at ChatWebSocketHandler:179 must drop it.
+        sender.execute(uri, session ->
+                Mono.fromCallable(() -> json.writeValueAsString(
+                                new TypingStart("typing-blank-id-test", "")))
+                        .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
+                        .then()
+        ).block(Duration.ofSeconds(5));
+
+        Thread.sleep(300);
+
+        assertThat(observed)
+                .noneMatch(s -> s.contains("\"type\":\"typing_start\""));
+
+        observerSession.dispose();
+    }
 }
