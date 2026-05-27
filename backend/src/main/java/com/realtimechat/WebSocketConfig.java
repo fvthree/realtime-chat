@@ -19,9 +19,10 @@ public class WebSocketConfig {
     public ChatWebSocketHandler chatWebSocketHandler(
             RoomRegistry registry,
             ObjectMapper json,
-            MessageRepository messageRepository
+            MessageRepository messageRepository,
+            RateLimiterService rateLimiterService
     ) {
-        return new ChatWebSocketHandler(registry, json, messageRepository);
+        return new ChatWebSocketHandler(registry, json, messageRepository, rateLimiterService);
     }
 
     @Bean
@@ -43,6 +44,7 @@ public class WebSocketConfig {
         cors.setAllowedOrigins(java.util.List.of("http://localhost:5173", "http://127.0.0.1:5173"));
         cors.setAllowedMethods(java.util.List.of("GET", "POST", "OPTIONS"));
         cors.setAllowedHeaders(java.util.List.of("*"));
+        cors.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", cors);

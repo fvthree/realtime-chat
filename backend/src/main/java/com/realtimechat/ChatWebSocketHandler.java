@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
@@ -12,6 +14,7 @@ import reactor.core.publisher.ConnectableFlux;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.security.Principal;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -20,8 +23,9 @@ import java.util.UUID;
  *
  *           session.receive() ─────► parse JSON ─────► handleInbound()
  *                                                      │  (side-effects:
+ *                                                      │   rate-limit check,
  *                                                      │   persist to DB,
- *                                                      │   room.emit,
+ *                                                      │   room.emit with principal senderId,
  *                                                      │   pong reply via personal sink)
  *                                                      ▼
  *                                              Room.sink ──┐
@@ -30,9 +34,14 @@ import java.util.UUID;
  *                                          │
  *                       history (DB) ──► concat ──────► session.send()
  *
- *  History is replayed before live: Flux.concat(history, live) ensures the
- *  last 50 DB messages arrive first, then the live stream picks up seamlessly.
- *  Duplicates are deduped client-side by server message id.
+ *  Auth: handle() extracts the OAuth2 principal once per session.
+ *  senderId is always the authenticated GitHub login — the wire-supplied senderId is ignored.
+ *
+ *  Empty principal guard: if getPrincipal() is empty (session expired between OAuth and
+ *  WS upgrade), the session is closed immediately with NOT_ACCEPTABLE.
+ *
+ *  Rate limiting: RateLimiterService.tryAcquire() is called per Message frame.
+ *  Non-blocking; uses Guava tryAcquire().
  *
  *  CRITICAL: handle() must return Mono.zip(inboundDrain, outboundDrain). Returning
  *  only one terminates the duplex stream. This is the #1 WebFlux WebSocket footgun.
@@ -44,20 +53,46 @@ public class ChatWebSocketHandler implements WebSocketHandler {
     private final RoomRegistry registry;
     private final ObjectMapper json;
     private final MessageRepository messageRepository;
+    private final RateLimiterService rateLimiterService;
 
-    public ChatWebSocketHandler(RoomRegistry registry, ObjectMapper json, MessageRepository messageRepository) {
+    public ChatWebSocketHandler(
+            RoomRegistry registry,
+            ObjectMapper json,
+            MessageRepository messageRepository,
+            RateLimiterService rateLimiterService
+    ) {
         this.registry = registry;
         this.json = json;
         this.messageRepository = messageRepository;
+        this.rateLimiterService = rateLimiterService;
     }
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
+        return session.getHandshakeInfo().getPrincipal()
+                .switchIfEmpty(
+                        session.close(CloseStatus.NOT_ACCEPTABLE)
+                                .doOnSuccess(v -> log.warn(
+                                        "WS upgrade with no principal, closing session {}", session.getId()))
+                                .then(Mono.empty())
+                )
+                .flatMap(principal -> handleAuthenticated(session, extractLogin(principal)));
+    }
+
+    private String extractLogin(Principal principal) {
+        if (principal instanceof OAuth2AuthenticationToken oauth) {
+            Object login = oauth.getPrincipal().getAttributes().get("login");
+            if (login instanceof String s && !s.isBlank()) return s;
+        }
+        // Fallback for test principals (UsernamePasswordAuthenticationToken, @WithMockUser)
+        return principal.getName();
+    }
+
+    private Mono<Void> handleAuthenticated(WebSocketSession session, String authenticatedUserId) {
         String roomId = extractRoomId(session);
         Room room = registry.getOrCreate(roomId);
 
         // Personal sink: receives pongs and other unicast-to-this-session events.
-        // Distinct from room.sink which is shared across all subscribers.
         var personalSink = reactor.core.publisher.Sinks.many()
                 .unicast()
                 .<ChatEvent>onBackpressureBuffer();
@@ -69,7 +104,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         Flux<ChatEvent> history = messageRepository.findLast50ByRoomId(roomId)
                 .map(e -> (ChatEvent) new Message(
                         e.id().toString(),
-                        null,            // tempId: null for replayed messages
+                        null,
                         e.roomId(),
                         e.senderId(),
                         e.text(),
@@ -85,11 +120,6 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         // to the live stream after history completes; without this buffer, messages emitted to
         // the room during the DB fetch are permanently lost for this joiner. The replay buffer
         // captures those events so concat can drain them immediately after history completes.
-        // Client deduplicates by server message id, so any overlap with history is harmless.
-        // replay(1024) is the per-connection event buffer. No additional onBackpressureBuffer needed here —
-        // room.sink already has its own 1024-element buffer (see Room.java). A second buffer here just delays
-        // the drop log without changing behaviour; events that exceed the replay window are silently dropped
-        // (slow subscriber stays connected with gaps, not disconnected — see Room.java Javadoc).
         ConnectableFlux<ChatEvent> live = Flux.merge(room.sink.asFlux(), personalSink.asFlux())
                 .replay(1024);
         Disposable liveConnection = live.connect();
@@ -101,19 +131,18 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         .map(session::textMessage)
         );
 
-        // concatMap (not flatMap) preserves per-session message ordering.
-        // flatMap would silently reorder messages if handleInbound ever becomes async (e.g., Stage 4 auth check).
+        // concatMap preserves per-session message ordering and is safe when handleInbound
+        // becomes async (e.g., auth cache miss in a future stage).
         Mono<Void> inboundDrain = session.receive()
                 .map(WebSocketMessage::getPayloadAsText)
                 .concatMap(payload -> parseEvent(payload)
-                        .map(evt -> handleInbound(evt, room, session, personalSink))
+                        .map(evt -> handleInbound(evt, room, session, personalSink, authenticatedUserId))
                         .orElseGet(Mono::empty))
                 .then();
 
         return Mono.zip(inboundDrain, outboundDrain)
                 .doFinally(sig -> {
                     liveConnection.dispose();
-                    // Ghost-typing fix: emit TypingStop for the disconnecting session.
                     String typingSenderId = room.typingBySession.remove(session.getId());
                     if (typingSenderId != null) {
                         room.emit(new TypingStop(room.id, typingSenderId));
@@ -124,8 +153,8 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     if (remaining == 0) {
                         registry.evictIfEmpty(room.id, room);
                     }
-                    log.debug("session {} closed, {} subscribers remain in room {}",
-                            session.getId(), remaining, room.id);
+                    log.debug("session {} ({}) closed, {} subscribers remain in room {}",
+                            session.getId(), authenticatedUserId, remaining, room.id);
                 })
                 .then();
     }
@@ -134,26 +163,29 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             ChatEvent evt,
             Room room,
             WebSocketSession session,
-            reactor.core.publisher.Sinks.Many<ChatEvent> personalSink
+            reactor.core.publisher.Sinks.Many<ChatEvent> personalSink,
+            String authenticatedUserId
     ) {
         long now = System.currentTimeMillis();
 
         return switch (evt) {
             case Message m -> {
-                if (m.senderId() == null || m.senderId().isBlank() || m.text() == null || m.text().isBlank()) {
-                    log.warn("dropping malformed message with blank senderId or text from session {}", session.getId());
+                if (m.text() == null || m.text().isBlank()) {
+                    log.warn("dropping blank-text message from session {}", session.getId());
+                    yield Mono.empty();
+                }
+                if (!rateLimiterService.tryAcquire(authenticatedUserId)) {
                     yield Mono.empty();
                 }
                 Message stamped = new Message(
                         UUID.randomUUID().toString(),
                         m.tempId(),
                         room.id,
-                        m.senderId(),
+                        authenticatedUserId,   // server-derived, not client-supplied
                         m.text(),
                         m.clientSendTs(),
                         now
                 );
-                // Persist fire-and-forget; broadcast immediately regardless of DB outcome.
                 messageRepository.save(new MessageEntity(
                         UUID.fromString(stamped.id()),
                         stamped.roomId(),
@@ -171,22 +203,17 @@ public class ChatWebSocketHandler implements WebSocketHandler {
             }
             case Ping p -> {
                 long sendTs = System.currentTimeMillis();
-                Pong pong = new Pong(room.id, p.clientPingTs(), now, sendTs);
-                personalSink.tryEmitNext(pong);
+                personalSink.tryEmitNext(new Pong(room.id, p.clientPingTs(), now, sendTs));
                 yield Mono.empty();
             }
             case TypingStart t -> {
-                if (t.senderId() == null || t.senderId().isBlank()) {
-                    yield Mono.empty();
-                }
-                room.typingBySession.put(session.getId(), t.senderId());
-                room.emit(t);
+                // Use authenticated identity — ignore client-supplied senderId.
+                room.typingBySession.put(session.getId(), authenticatedUserId);
+                room.emit(new TypingStart(room.id, authenticatedUserId));
                 yield Mono.empty();
             }
             case TypingStop t -> {
                 // Use the server-stored senderId, not the client-supplied one.
-                // This prevents: (a) ghost typing when blank senderId clears the map but skips emit,
-                // and (b) impersonation via {"type":"typing_stop","senderId":"victimUser"}.
                 String storedSenderId = room.typingBySession.remove(session.getId());
                 if (storedSenderId != null) {
                     room.emit(new TypingStop(room.id, storedSenderId));
