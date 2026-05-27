@@ -184,9 +184,12 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                 yield Mono.empty();
             }
             case TypingStop t -> {
-                room.typingBySession.remove(session.getId());
-                if (t.senderId() != null && !t.senderId().isBlank()) {
-                    room.emit(t);
+                // Use the server-stored senderId, not the client-supplied one.
+                // This prevents: (a) ghost typing when blank senderId clears the map but skips emit,
+                // and (b) impersonation via {"type":"typing_stop","senderId":"victimUser"}.
+                String storedSenderId = room.typingBySession.remove(session.getId());
+                if (storedSenderId != null) {
+                    room.emit(new TypingStop(room.id, storedSenderId));
                 }
                 yield Mono.empty();
             }
