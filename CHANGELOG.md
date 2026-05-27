@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/) (extended to 4 digits: MAJOR.MINOR.PATCH.MICRO).
 
+## [0.2.2.0] - 2026-05-27
+
+### Fixed
+
+- **`TypingStop` senderId impersonation and ghost-typing.** Any session could send `{"type":"typing_stop","senderId":"victimUser"}` to suppress another user's typing indicator, or send `{"type":"typing_stop","senderId":""}` which cleared the session's map entry but skipped the broadcast — leaving peers stuck with a ghost typing indicator. The handler now uses the server-stored senderId from `typingBySession` and ignores the client-supplied value entirely. Clients can no longer impersonate or ghost-type each other.
+
+### Tests
+
+- **`typingStopWithBlankSenderIdAfterTypingStartClearsIndicator`** — regression test: typer sends `TypingStart` with `"typerA"`, then `TypingStop` with `""`. Observer must see `typing_stop` with `senderId:"typerA"`. Test uses a `Sinks.One` shutdown signal to hold the session open until the assertion passes, ensuring the typing stop arrives via the blank-senderId handler (not the disconnect cleanup path).
+- **`AbstractChatWebSocketTest`** — shared base class extracted from both integration and resilience test classes, eliminating 35 lines of duplicated Testcontainers + Spring wiring boilerplate.
+
 ## [0.2.1.0] - 2026-05-26
 
 ### Fixed
