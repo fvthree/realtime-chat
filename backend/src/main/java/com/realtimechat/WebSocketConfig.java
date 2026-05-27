@@ -3,6 +3,7 @@ package com.realtimechat;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.reactive.CorsConfigurationSource;
 import org.springframework.web.cors.reactive.CorsWebFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
@@ -39,15 +40,19 @@ public class WebSocketConfig {
     }
 
     @Bean
-    public CorsWebFilter corsWebFilter() {
+    public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cors = new CorsConfiguration();
         cors.setAllowedOrigins(java.util.List.of("http://localhost:5173", "http://127.0.0.1:5173"));
         cors.setAllowedMethods(java.util.List.of("GET", "POST", "OPTIONS"));
         cors.setAllowedHeaders(java.util.List.of("*"));
         cors.setAllowCredentials(true);
-
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", cors);
-        return new CorsWebFilter(source);
+        return source;
+    }
+
+    @Bean
+    public CorsWebFilter corsWebFilter(CorsConfigurationSource corsConfigurationSource) {
+        return new CorsWebFilter(corsConfigurationSource);
     }
 }
