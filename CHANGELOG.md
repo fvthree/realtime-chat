@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/) (extended to 4 digits: MAJOR.MINOR.PATCH.MICRO).
 
+## [0.3.0.0] - 2026-05-27
+
+### Added
+
+- **Stage 4: GitHub OAuth2 authentication.** Spring Security reactive filter chain (`SecurityConfig`) protects `/api/me` and `/ws/chat/**`. Unauthenticated requests redirect to GitHub OAuth2 login. Success redirect URL is configurable via `OAUTH2_SUCCESS_REDIRECT_URL` env var.
+- **`/api/me` endpoint.** `ChatController` returns `{login, avatarUrl}` extracted from the OAuth2 principal. Frontend `identity.ts` replaces the old `loadOrCreateSenderId` localStorage approach with `fetchCurrentUser()` — identity is now always the authenticated GitHub login.
+- **WebSocket principal stamping.** `ChatWebSocketHandler` extracts the authenticated principal at WS upgrade time; `senderId` on all outbound messages is always the server-authoritative GitHub login — clients can no longer supply arbitrary sender IDs.
+- **Per-principal rate limiting.** `RateLimiterService` (Guava `RateLimiter`) maintains one token bucket per principal. Default 3 msg/sec, configurable via `RATE_LIMIT_MSG_PER_SEC`. Rate-exceeded messages are dropped with a WARN log.
+- **Frontend auth gate.** `App.tsx` fetches `/api/me` on mount; redirects to `/oauth2/authorization/github` if unauthenticated.
+- **`.env.example`** documents all required env vars: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `OAUTH2_SUCCESS_REDIRECT_URL`, `DB_USERNAME`, `DB_PASSWORD`, `R2DBC_URL`, `RATE_LIMIT_MSG_PER_SEC`.
+
+### Tests
+
+- **`ChatControllerTest`** — `@WebFluxTest` verifying `/api/me` returns login + avatarUrl from OAuth2 principal, and 3xx redirect for unauthenticated requests.
+- **`RateLimiterServiceTest`** — unit tests for first-message allowed, within-limit burst allowed, excessive burst denied, and per-principal bucket isolation.
+- **`TestAuthWebFilter`** — test-only `@TestConfiguration` WebFilter that reads `X-Auth-User` header and injects a `UsernamePasswordAuthenticationToken` at `HIGHEST_PRECEDENCE`, replacing the live OAuth2 flow in integration tests.
+- Integration and resilience tests updated to pass `X-Auth-User` headers via `ReactorNettyWebSocketClient`.
+
 ## [0.2.2.0] - 2026-05-27
 
 ### Fixed
