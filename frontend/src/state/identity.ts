@@ -1,34 +1,22 @@
-// Stage 2 identity: random guest-XXXX persisted in localStorage so refresh keeps
-// the same name. Key is scoped by roomId so two tabs on different rooms get different
-// senderIds (fixes: messages from ?room=foo appearing on the "self" side in ?room=bar).
-// Stage 4 replaces this with the authenticated principal from OAuth.
+// Stage 4 identity: GitHub login derived from the authenticated principal via /api/me.
+// Guest identity (Stage 1-3) is replaced by OAuth2-derived identity.
 
-function storageKey(roomId: string): string {
-  return `realtime-chat:senderId:${roomId}`;
+export interface CurrentUser {
+  login: string;
+  avatarUrl: string;
 }
 
-function randomGuestId(): string {
-  const buf = new Uint8Array(2);
-  crypto.getRandomValues(buf);
-  const hex = Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `guest-${hex}`;
-}
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
 
-export function loadOrCreateSenderId(roomId: string): string {
-  const key = storageKey(roomId);
+export async function fetchCurrentUser(): Promise<CurrentUser | null> {
   try {
-    const existing = localStorage.getItem(key);
-    if (existing && existing.startsWith("guest-")) return existing;
+    const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return { login: data.login, avatarUrl: data.avatarUrl ?? "" };
   } catch {
-    // localStorage may be disabled (private mode, sandboxed iframes) — fall through
+    return null;
   }
-  const fresh = randomGuestId();
-  try {
-    localStorage.setItem(key, fresh);
-  } catch {
-    // ignore — we'll pick a new id on every load
-  }
-  return fresh;
 }
 
 export function getRoomIdFromUrl(): string {

@@ -20,6 +20,7 @@ const BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 16000, 30000];
 export type UseWebSocketOptions = {
   url: string;
   onEvent: (event: WireEvent) => void;
+  enabled?: boolean;
 };
 
 export type UseWebSocketResult = {
@@ -27,7 +28,7 @@ export type UseWebSocketResult = {
   send: (event: WireEvent) => boolean;
 };
 
-export function useWebSocket({ url, onEvent }: UseWebSocketOptions): UseWebSocketResult {
+export function useWebSocket({ url, onEvent, enabled = true }: UseWebSocketOptions): UseWebSocketResult {
   const [state, setState] = useState<ConnectionState>({ kind: "disconnected" });
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
@@ -71,6 +72,7 @@ export function useWebSocket({ url, onEvent }: UseWebSocketOptions): UseWebSocke
   }, [url]);
 
   useEffect(() => {
+    if (!enabled) return;
     closedByEffectRef.current = false;
     connect();
     return () => {
@@ -89,7 +91,7 @@ export function useWebSocket({ url, onEvent }: UseWebSocketOptions): UseWebSocke
       }
       setState({ kind: "disconnected" });
     };
-  }, [connect]);
+  }, [connect, enabled]);
 
   const send = useCallback((event: WireEvent): boolean => {
     const ws = wsRef.current;
