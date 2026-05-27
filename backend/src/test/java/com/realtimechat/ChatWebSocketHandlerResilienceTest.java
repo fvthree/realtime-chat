@@ -4,6 +4,7 @@ import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.when;
  */
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(TestAuthWebFilter.class)
 class ChatWebSocketHandlerResilienceTest extends AbstractChatWebSocketTest {
 
     // MockBean replaces the real repo — onErrorResume in the handler must catch the error
@@ -44,7 +46,7 @@ class ChatWebSocketHandlerResilienceTest extends AbstractChatWebSocketTest {
         WebSocketClient client = new ReactorNettyWebSocketClient();
         List<String> received = new CopyOnWriteArrayList<>();
 
-        client.execute(uri("resilience-test"), session ->
+        client.execute(uri("resilience-test"), authHeaders("test-user"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(received::add)
@@ -73,7 +75,7 @@ class ChatWebSocketHandlerResilienceTest extends AbstractChatWebSocketTest {
 
         List<String> observed = new CopyOnWriteArrayList<>();
 
-        Disposable observerSession = observer.execute(uri, session ->
+        Disposable observerSession = observer.execute(uri, authHeaders("observer"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(observed::add)
@@ -86,7 +88,7 @@ class ChatWebSocketHandlerResilienceTest extends AbstractChatWebSocketTest {
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
         Message m = new Message(null, "tmp-save-fail", "save-failure-test", "userA", "fire-and-forget", 1000L, 0L);
-        sender.execute(uri, session ->
+        sender.execute(uri, authHeaders("sender"), session ->
                 Mono.fromCallable(() -> json.writeValueAsString(m))
                         .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
                         .then()

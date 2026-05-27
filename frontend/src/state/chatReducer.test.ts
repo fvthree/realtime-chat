@@ -109,4 +109,34 @@ describe("chatReducer", () => {
     const b = chatReducer(a, { kind: "typing-stop", senderId: "guest-bb" });
     expect(b.typing.has("guest-bb")).toBe(false);
   });
+
+  it("presence updates the connected count", () => {
+    const s = chatReducer(initialChatState, { kind: "presence", connected: 3 });
+    expect(s.connected).toBe(3);
+  });
+
+  it("presence with 0 resets connected count to zero", () => {
+    const withTwo = chatReducer(initialChatState, { kind: "presence", connected: 2 });
+    const withZero = chatReducer(withTwo, { kind: "presence", connected: 0 });
+    expect(withZero.connected).toBe(0);
+  });
+
+  it("reset returns initial state", () => {
+    const withMessages = chatReducer(initialChatState, {
+      kind: "queue-send",
+      tempId: "tmp-x",
+      senderId: "fvthree",
+      text: "hello",
+      clientSendTs: 1000,
+    });
+    const withTyping = chatReducer(withMessages, {
+      kind: "typing-start",
+      senderId: "alice",
+      selfSenderId: "fvthree",
+    });
+    const reset = chatReducer(withTyping, { kind: "reset" });
+    expect(reset.messages).toHaveLength(0);
+    expect(reset.typing.size).toBe(0);
+    expect(reset.connected).toBe(0);
+  });
 });
