@@ -6,14 +6,27 @@ spring:
     name: realtime-chat-backend
 
   r2dbc:
-    url: r2dbc:postgresql://localhost:5432/realtimechat
-    username: postgres
-    password: postgres
+    url: ${R2DBC_URL:r2dbc:postgresql://localhost:5432/realtimechat}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
 
   sql:
     init:
       mode: always
       schema-locations: classpath:schema.sql
+
+  security:
+    oauth2:
+      client:
+        registration:
+          github:
+            client-id: ${GITHUB_CLIENT_ID}
+            client-secret: ${GITHUB_CLIENT_SECRET}
+            scope: read:user
+
+app:
+  oauth2-success-redirect: ${OAUTH2_SUCCESS_REDIRECT_URL:http://localhost:5173/}
+  rate-limit-messages-per-second: ${RATE_LIMIT_MSG_PER_SEC:3}
 
 logging:
   level:
