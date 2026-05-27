@@ -9,6 +9,7 @@ import org.springframework.web.reactive.socket.client.WebSocketClient;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.net.URI;
 import java.time.Duration;
@@ -366,8 +367,14 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
+        // Shutdown signal: holds the typer session open until we explicitly release it.
+        // This ensures typing_stop arrives via the blank-senderId handler (the code under test),
+        // not via the doFinally ghost-typing cleanup that fires on disconnect.
+        Sinks.One<Void> shutdownSignal = Sinks.one();
+
         // Typer sends TypingStart with valid senderId, then TypingStop with blank senderId.
-        typer.execute(uri, session ->
+        // Session stays open (via shutdownSignal) so doFinally cannot race the TypingStop handler.
+        Disposable typerSession = typer.execute(uri, session ->
                 Mono.fromCallable(() -> json.writeValueAsString(
                                 new TypingStart("typing-blank-stop-test", "typerA")))
                         .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
@@ -375,10 +382,12 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
                         .then(Mono.fromCallable(() -> json.writeValueAsString(
                                         new TypingStop("typing-blank-stop-test", "")))
                                 .flatMap(p -> session.send(Mono.just(session.textMessage(p)))))
+                        .then(shutdownSignal.asMono())
                         .then()
-        ).block(Duration.ofSeconds(5));
+        ).subscribe();
 
-        // Observer must see typing_start followed by typing_stop with the server-stored senderId.
+        // Observer must see typing_start and typing_stop while typer session is still open —
+        // proving typing_stop came from the blank-senderId handler, not disconnect cleanup.
         Awaitility.await()
                 .atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> {
@@ -388,6 +397,8 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
                             && s.contains("\"senderId\":\"typerA\""));
                 });
 
+        shutdownSignal.tryEmitEmpty();
+        typerSession.dispose();
         observerSession.dispose();
     }
 }
