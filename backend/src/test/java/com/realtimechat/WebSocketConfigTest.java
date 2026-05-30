@@ -54,4 +54,17 @@ class WebSocketConfigTest {
         assertThat(cors).isNotNull();
         assertThat(cors.getAllowedOrigins()).containsExactly("http://localhost:5173");
     }
+
+    @Test
+    void blankEntriesInCorsStringAreFiltered() throws Exception {
+        // "  " is not empty but is blank — isBlank() filter must reject it
+        CorsConfigurationSource source = configWith(
+                "http://localhost:5173,   ,http://127.0.0.1:5173").corsConfigurationSource();
+        var exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("http://localhost:5173/").build());
+        var cors = source.getCorsConfiguration(exchange);
+        assertThat(cors).isNotNull();
+        assertThat(cors.getAllowedOrigins())
+                .containsExactlyInAnyOrder("http://localhost:5173", "http://127.0.0.1:5173");
+    }
 }

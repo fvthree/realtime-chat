@@ -48,7 +48,7 @@ public class WebSocketConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cors = new CorsConfiguration();
         List<String> origins = Arrays.stream(corsAllowedOriginsRaw.split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+                .map(String::trim).filter(s -> !s.isBlank()).toList();
         cors.setAllowedOrigins(origins);
         cors.setAllowedMethods(java.util.List.of("GET", "POST", "OPTIONS"));
         cors.setAllowedHeaders(java.util.List.of("*"));

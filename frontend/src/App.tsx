@@ -45,7 +45,7 @@ export function App() {
           window.location.href = `${API_BASE}/oauth2/authorization/github`;
         }
       })
-      .catch(() => setAuthError(true))
+      .catch((err: unknown) => { console.error("Auth check failed:", err); setAuthError(true); })
       .finally(() => setAuthChecked(true));
   }, []);
 
@@ -115,7 +115,7 @@ export function App() {
     [pushSample]
   );
 
-  const { state, send } = useWebSocket({ url, onEvent: handleEvent, enabled: authChecked && !!senderId });
+  const { state, send } = useWebSocket({ url, onEvent: handleEvent, enabled: authChecked && !authError && !!senderId });
 
   const sendPing = useCallback((ping: WirePing) => send(ping), [send]);
 
