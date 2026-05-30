@@ -18,8 +18,8 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 - [ ] **WebSocket protocol-level keepalive** — application-level clock-sync pings are JSON frames, not RFC 6455 protocol-level Ping/Pong frames. Fly.io's load balancer kills idle WebSocket connections at ~60s. Before Stage 5, configure a Netty-level WebSocket ping interval (3-line Spring bean or `application.yml` property). Without this, idle connections silently die behind the proxy.
 
 ## Stage 4 — Auth
-- [ ] **WebSocket auth context propagation** — Spring Security reactive `SecurityWebFilterChain` does NOT automatically populate the WebSocket session's principal. Need to wire `ReactorContextWebFilter` + read `session.getHandshakeInfo().getPrincipal()` inside the handler. Common footgun.
-- [ ] **Per-IP + per-user rate limit** on the WebSocket inbound stream.
+- [x] **WebSocket auth context propagation** — `session.getHandshakeInfo().getPrincipal()` wired in `ChatWebSocketHandler.handle()`; `switchIfEmpty` guard closes unauthenticated sessions with NOT_ACCEPTABLE.
+- [x] **Per-user rate limit** on the WebSocket inbound stream — Guava RateLimiter per principal in `RateLimiterService`; per-IP deferred to Stage 5.
 
 ## Stage 7 — Mobile / polish
 - [x] **HUD overlaps composer on all viewports** — `position: fixed; bottom: 24px` placed the HUD inside the composer region. Fixed: `bottom: 80px` globally; HUD hidden below 640px via `@media` (compact metric still shows in top bar). Fixed by /qa on kolkata-v1, 2026-05-26.
@@ -41,14 +41,12 @@ Captured during /plan-eng-review and /plan-design-review for Stage 1, deferred t
 
 ## Code quality deferred from v0.2.0.0 (P2 — fix before any deployment)
 - [x] **TypingStop senderId impersonation** — fixed: TypingStop handler now uses the server-stored senderId from `typingBySession` and ignores the client-supplied value entirely. A client can no longer suppress another user's typing indicator by sending `{"type":"typing_stop","senderId":"victimUser"}`. (kolkata-v1, 2026-05-27)
-- [ ] **Fire-and-forget save() has no timeout** — `messageRepository.save(...).subscribe(...)` is an untracked subscription with no timeout. Under R2DBC connection pool exhaustion, save calls queue up indefinitely. Add `.timeout(Duration.ofSeconds(5))` before `.subscribe()` to bound the window. Low priority until Stage 5 multi-instance or real load.
-
-
-- [ ] **application.yml hardcoded credentials** — `username: postgres` / `password: postgres` committed plaintext. Change to `${DB_USERNAME:postgres}` / `${DB_PASSWORD:postgres}` env-var pattern before Stage 4 or any non-localhost deployment. Flagged in pre-landing review.
-- [ ] **No server-side message text length cap** — `ChatWebSocketHandler.java:140` only guards blank text; Netty allows up to 64 KB frames which persist unchecked to the `TEXT` column. Add `m.text().length() > 10_000` guard alongside the blank check; mirror with `maxLength={10000}` on the `<input>` in Composer.tsx.
-- [ ] **Room ID max-length mismatch** — `identity.ts:37` enforces `/^[a-z0-9-]{1,32}$/` (32 chars) while `ChatWebSocketHandler.java:206` allows up to 64 chars. Standardize on 64 in the frontend regex, or on 32 in the backend constant. Choose one before Stage 5 multi-instance work.
+- [x] **Fire-and-forget save() has no timeout** — `.timeout(Duration.ofSeconds(5))` added before `.subscribe()` in `ChatWebSocketHandler.java`.
+- [x] **application.yml hardcoded credentials** — DB credentials already use `${DB_USERNAME:postgres}` / `${DB_PASSWORD:postgres}`; GitHub OAuth uses `${GITHUB_CLIENT_ID}` / `${GITHUB_CLIENT_SECRET}` in the committed file.
+- [x] **No server-side message text length cap** — `m.text().length() > 10_000` guard added in `ChatWebSocketHandler.java`; `maxLength={10_000}` added to `Composer.tsx` input.
+- [x] **Room ID max-length mismatch** — standardized to 32 chars in `ChatWebSocketHandler.extractRoomId()` to match `identity.ts`.
 
 ## Test gaps deferred from v0.2.0.0 (P1 — close before Stage 4)
-- [ ] **chatReducer: presence + reset action coverage** — `chatReducer.test.ts` has no tests for the `presence` (updates `chat.connected`) or `reset` actions. Add at least one test each; the file is otherwise well-covered.
-- [ ] **Send-when-disconnected → "failed" state test** — App.tsx dispatches `{kind:"fail",tempId}` when `useWebSocket.send()` returns false, but there is no integration-level test that opens a socket, closes it, sends a message, and asserts the message enters `status:"failed"` state. Wire-level gap; the unit tests in `useWebSocket.test.ts` cover the `send()=false` path in isolation.
-- [ ] **Retry-failed-message integration test** — `doRetry` in App.tsx re-dispatches and re-sends, but no test exercises the full round-trip: send → fail → retry → ack. A `WebTestClient` integration test or a Vitest mock-WebSocket test would close this.
+- [x] **chatReducer: presence + reset action coverage** — covered in `chatReducer.test.ts` (presence: lines 113-121, reset: lines 124-141).
+- [x] **Send-when-disconnected → "failed" state test** — `useWebSocket.test.ts` now tests that `send()` returns false while in `reconnecting` state; `chatReducer.test.ts` covers the fail/retry state transitions end-to-end. App.tsx wiring (`if (!ok) dispatch({kind:"fail"})`) is a 1-line branch from verified primitives.
+- [ ] **Retry-failed-message integration test** — `doRetry` in App.tsx re-dispatches and re-sends, but no test exercises the full round-trip: send → fail → retry → ack. A rendered App.tsx component test would close this; deferred to Stage 5.

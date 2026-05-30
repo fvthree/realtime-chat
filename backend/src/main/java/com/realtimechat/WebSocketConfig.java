@@ -1,20 +1,25 @@
 package com.realtimechat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.reactive.CorsConfigurationSource;
-import org.springframework.web.cors.reactive.CorsWebFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
 import org.springframework.web.reactive.HandlerMapping;
 import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 @Configuration
 public class WebSocketConfig {
+
+    @Value("${app.cors-allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
+    private String corsAllowedOriginsRaw;
 
     @Bean
     public ChatWebSocketHandler chatWebSocketHandler(
@@ -42,7 +47,9 @@ public class WebSocketConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration cors = new CorsConfiguration();
-        cors.setAllowedOrigins(java.util.List.of("http://localhost:5173", "http://127.0.0.1:5173"));
+        List<String> origins = Arrays.stream(corsAllowedOriginsRaw.split(","))
+                .map(String::trim).filter(s -> !s.isBlank()).toList();
+        cors.setAllowedOrigins(origins);
         cors.setAllowedMethods(java.util.List.of("GET", "POST", "OPTIONS"));
         cors.setAllowedHeaders(java.util.List.of("*"));
         cors.setAllowCredentials(true);
@@ -51,8 +58,4 @@ public class WebSocketConfig {
         return source;
     }
 
-    @Bean
-    public CorsWebFilter corsWebFilter(CorsConfigurationSource corsConfigurationSource) {
-        return new CorsWebFilter(corsConfigurationSource);
-    }
 }

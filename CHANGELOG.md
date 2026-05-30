@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/) (extended to 4 digits: MAJOR.MINOR.PATCH.MICRO).
 
+## [0.3.1.0] - 2026-05-30
+
+### Fixed
+
+- **Network-error guard in auth gate.** `fetchCurrentUser()` previously swallowed all exceptions (network failures, 5xx responses) and returned `null`, which `App.tsx` interpreted as "unauthenticated" and issued an immediate OAuth redirect. A transient backend blip would bounce an authenticated user through a full GitHub OAuth round-trip. Fix: `fetchCurrentUser` now returns `null` only for HTTP 401; any other failure throws, and `App.tsx` catches it to show "Unable to reach the server. Please refresh." without triggering a redirect.
+- **CORS allowed-origins hardcoded to localhost.** `WebSocketConfig.corsConfigurationSource()` had `http://localhost:5173` and `http://127.0.0.1:5173` baked in — any non-localhost deployment got CORS errors. Fixed by reading `CORS_ALLOWED_ORIGINS` env var (comma-separated) with a localhost fallback. Documented in `.env.example`.
+
+### Changed
+
+- **Named constants for `MAX_MESSAGE_TEXT_LENGTH` and `ROOM_ID_PATTERN`.** Backend extracts both as `private static final` constants in `ChatWebSocketHandler`, eliminating a magic `10_000` literal and a `Pattern.compile()` call that ran on every WS frame. Frontend exports `MAX_MESSAGE_TEXT_LENGTH` from `frontend/src/config.ts` so `Composer.tsx` and the backend share the same value by convention.
+- **`frontend/src/config.ts` extracted.** `API_BASE` centralised from `App.tsx` and `identity.ts` into a single module. `MAX_MESSAGE_TEXT_LENGTH` added alongside it.
+- **Dead `CorsWebFilter` bean removed.** The `CorsWebFilter` in `WebSocketConfig` was registered at `LOWEST_PRECEDENCE` (after Spring Security), so CORS headers were never applied to redirect responses. Removed; Spring Security's `.cors(withDefaults())` picks up the `CorsConfigurationSource` bean directly.
+- **`.gitignore` expanded.** Added `frontend/.env`, `frontend/.env.*`, and `.gstack/` to prevent accidental credential and analytics commits.
+
+### Tests
+
+- **`identity.test.ts` contract updated.** `fetchCurrentUser` now throws on network errors and 5xx responses; tests updated to assert `rejects.toThrow` for those cases. New test: 500 backend response throws with status in message.
+- **`unauthenticatedUpgradeIsRejected`** — integration test verifying that a WS upgrade without auth headers is closed with a non-2xx handshake.
+- **`oversizedMessageIsDropped`** — integration test verifying that a message exceeding `MAX_MESSAGE_TEXT_LENGTH` is never broadcast to room observers.
+- **`roomIdExceeding32CharsRedirectsToLobby`** — integration test verifying that a 33-character room ID falls back to lobby and the oversized-room client lands there.
+- **`useWebSocket` enabled-flag tests** (3 cases): stays disconnected when `enabled=false`; transitions to connecting when `enabled` flips to `true`; `send()` returns `false` in reconnecting state.
+
 ## [0.3.0.0] - 2026-05-27
 
 ### Added

@@ -1,3 +1,5 @@
+import { API_BASE } from "../config";
+
 // Stage 4 identity: GitHub login derived from the authenticated principal via /api/me.
 // Guest identity (Stage 1-3) is replaced by OAuth2-derived identity.
 
@@ -6,17 +8,14 @@ export interface CurrentUser {
   avatarUrl: string;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
-
+// Returns null only on HTTP 401 (unauthenticated). Throws on network errors or
+// non-401 HTTP failures so callers can distinguish "not logged in" from "can't reach server".
 export async function fetchCurrentUser(): Promise<CurrentUser | null> {
-  try {
-    const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return { login: data.login, avatarUrl: data.avatarUrl ?? "" };
-  } catch {
-    return null;
-  }
+  const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(`/api/me returned ${res.status}`);
+  const data = await res.json();
+  return { login: data.login, avatarUrl: data.avatarUrl ?? "" };
 }
 
 export function getRoomIdFromUrl(): string {
