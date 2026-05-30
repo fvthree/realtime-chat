@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -29,6 +30,22 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
     private ReactorNettyWebSocketClient client() {
         return new ReactorNettyWebSocketClient();
+    }
+
+    // ── Auth gate ─────────────────────────────────────────────────────────────
+
+    @Test
+    void unauthenticatedUpgradeIsRejected() {
+        // No X-Auth-User header → TestAuthWebFilter injects no principal.
+        // Spring Security's authorizeExchange rejects the upgrade (non-101 response).
+        // This locks in the critical Stage 4 security invariant: anonymous WS connections
+        // are refused before any message processing occurs.
+        assertThatThrownBy(() ->
+                client().execute(uri("unauth-test"), new HttpHeaders(),
+                        session -> session.receive().then()
+                ).block(Duration.ofSeconds(5))
+        ).isInstanceOf(Exception.class)
+         .hasMessageContaining("Invalid handshake response");
     }
 
     // ── Core message exchange ─────────────────────────────────────────────────
@@ -140,11 +157,74 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
         Thread.sleep(500);
 
-        // With 3 msg/sec rate limit, only a small fraction of 30 should arrive
+        // With 3 msg/sec rate limit and ~0.5s window, at most 2-3 messages should get through
         long msgCount = received.stream().filter(s -> s.contains("\"type\":\"msg\"")).count();
-        assertThat(msgCount).isLessThan(10);
+        assertThat(msgCount).isLessThanOrEqualTo(5);
 
         observer.dispose();
+    }
+
+    @Test
+    void oversizedMessageIsDropped() throws Exception {
+        URI uri = uri("oversize-test");
+        List<String> received = new CopyOnWriteArrayList<>();
+
+        Disposable observer = client().execute(uri, authHeaders("observer"), session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(received::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(received)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        String oversized = "x".repeat(10_001);
+        client().execute(uri, authHeaders("sender"), session ->
+                Mono.fromCallable(() -> {
+                            Message m = new Message(null, "tmp-big", "oversize-test",
+                                    "sender", oversized, 1000L, 0L);
+                            return json.writeValueAsString(m);
+                        })
+                        .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
+                        .then(Mono.delay(Duration.ofMillis(500)))
+                        .then()
+        ).block(Duration.ofSeconds(6));
+
+        assertThat(received).noneMatch(s -> s.contains("\"type\":\"msg\""));
+
+        observer.dispose();
+    }
+
+    @Test
+    void roomIdExceeding32CharsRedirectsToLobby() throws Exception {
+        // A 33-char room ID exceeds the max and must fall back to "lobby"
+        String oversizedRoomId = "a".repeat(33);
+        List<String> lobbyReceived = new CopyOnWriteArrayList<>();
+
+        Disposable lobbySession = client().execute(uri("lobby"), authHeaders("lobby-user"), session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(lobbyReceived::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(lobbyReceived)
+                        .anyMatch(s -> s.contains("\"connected\":1")));
+
+        // Client using 33-char room ID should land in lobby (server falls back)
+        Disposable oversizedSession = client().execute(uri(oversizedRoomId), authHeaders("oversized-user"), session ->
+                session.receive().then()
+        ).subscribe();
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(lobbyReceived)
+                        .anyMatch(s -> s.contains("\"connected\":2")));
+
+        lobbySession.dispose();
+        oversizedSession.dispose();
     }
 
     @Test

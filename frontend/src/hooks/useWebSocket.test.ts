@@ -181,6 +181,38 @@ describe("useWebSocket.send()", () => {
   });
 });
 
+describe("useWebSocket enabled flag", () => {
+  it("stays disconnected and never opens a socket when enabled is false", () => {
+    const { result } = renderHook(() =>
+      useWebSocket({ url: "ws://localhost/ws/chat/test", onEvent: () => {}, enabled: false })
+    );
+    expect(result.current.state.kind).toBe("disconnected");
+    expect(lastMockWS).toBeNull();
+  });
+
+  it("transitions to connecting when enabled flips from false to true", () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useWebSocket({ url: "ws://localhost/ws/chat/test", onEvent: () => {}, enabled }),
+      { initialProps: { enabled: false } }
+    );
+    expect(result.current.state.kind).toBe("disconnected");
+    rerender({ enabled: true });
+    expect(result.current.state.kind).toBe("connecting");
+  });
+
+  it("returns false from send() while in reconnecting state (socket not open)", () => {
+    const { result } = renderHook(() =>
+      useWebSocket({ url: "ws://localhost/ws/chat/test", onEvent: () => {} })
+    );
+    act(() => lastMockWS!.simulateOpen());
+    act(() => lastMockWS!.simulateClose());
+    expect(result.current.state.kind).toBe("reconnecting");
+    const ok = result.current.send({ type: "ping", roomId: "test", senderId: "u", clientPingTs: 1 });
+    expect(ok).toBe(false);
+  });
+});
+
 describe("useWebSocket cleanup", () => {
   it("cancels the reconnect timer and does not open a new socket on unmount", () => {
     const { unmount } = renderHook(() =>

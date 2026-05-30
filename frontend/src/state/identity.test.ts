@@ -32,10 +32,14 @@ describe("fetchCurrentUser", () => {
     expect(user).toBeNull();
   });
 
-  it("returns null on network error", async () => {
+  it("throws on network error (so callers can avoid spurious OAuth redirects)", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("Network error"));
-    const user = await fetchCurrentUser();
-    expect(user).toBeNull();
+    await expect(fetchCurrentUser()).rejects.toThrow("Network error");
+  });
+
+  it("throws on non-401 HTTP error (e.g. 500 backend failure)", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response);
+    await expect(fetchCurrentUser()).rejects.toThrow("/api/me returned 500");
   });
 
   it("returns null when avatarUrl is missing from response", async () => {
