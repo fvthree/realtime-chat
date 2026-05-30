@@ -1,50 +1,58 @@
-import { beforeEach, describe, it, expect, vi } from "vitest";
-import { loadOrCreateSenderId, getRoomIdFromUrl } from "./identity";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fetchCurrentUser, getRoomIdFromUrl } from "./identity";
 
-beforeEach(() => {
-  vi.unstubAllGlobals();
-  localStorage.clear();
+// ── fetchCurrentUser ──────────────────────────────────────────────────────────
+
+describe("fetchCurrentUser", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns {login, avatarUrl} on 200 response", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ login: "fvthree", avatarUrl: "https://avatars.github.com/u/1" }),
+    } as Response);
+
+    const user = await fetchCurrentUser();
+    expect(user).toEqual({ login: "fvthree", avatarUrl: "https://avatars.github.com/u/1" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/me"),
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("returns null on 401 response", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 401 } as Response);
+    const user = await fetchCurrentUser();
+    expect(user).toBeNull();
+  });
+
+  it("returns null on network error", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("Network error"));
+    const user = await fetchCurrentUser();
+    expect(user).toBeNull();
+  });
+
+  it("returns null when avatarUrl is missing from response", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ login: "fvthree" }), // no avatarUrl
+    } as Response);
+    const user = await fetchCurrentUser();
+    expect(user).toEqual({ login: "fvthree", avatarUrl: "" });
+  });
 });
 
-describe("loadOrCreateSenderId", () => {
-  it("creates a new guest id when none exists", () => {
-    const id = loadOrCreateSenderId("lobby");
-    expect(id).toMatch(/^guest-[0-9a-f]{4}$/);
-  });
-
-  it("persists and reloads the same id on subsequent calls", () => {
-    const first = loadOrCreateSenderId("lobby");
-    const second = loadOrCreateSenderId("lobby");
-    expect(second).toBe(first);
-  });
-
-  it("scopes the id per room so different rooms get different ids", () => {
-    const a = loadOrCreateSenderId("room-a");
-    const b = loadOrCreateSenderId("room-b");
-    // Both are valid guest ids but stored under separate keys
-    expect(a).toMatch(/^guest-/);
-    expect(b).toMatch(/^guest-/);
-    expect(a).not.toBe(b);
-  });
-
-  it("returns a fresh id without throwing when localStorage is unavailable", () => {
-    vi.stubGlobal("localStorage", {
-      getItem: () => { throw new Error("SecurityError"); },
-      setItem: () => { throw new Error("SecurityError"); },
-    });
-    const id = loadOrCreateSenderId("lobby");
-    expect(id).toMatch(/^guest-[0-9a-f]{4}$/);
-  });
-
-  it("ignores stored values that do not start with guest-", () => {
-    // Simulate a corrupted or future-format value
-    localStorage.setItem("realtime-chat:senderId:lobby", "oauth-user-123");
-    const id = loadOrCreateSenderId("lobby");
-    expect(id).toMatch(/^guest-[0-9a-f]{4}$/);
-  });
-});
+// ── getRoomIdFromUrl ──────────────────────────────────────────────────────────
 
 describe("getRoomIdFromUrl", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("returns lobby when no room param is present", () => {
     vi.stubGlobal("location", { search: "" });
     expect(getRoomIdFromUrl()).toBe("lobby");

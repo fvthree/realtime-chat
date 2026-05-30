@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useClockSync } from "./hooks/useClockSync";
 import { chatReducer, initialChatState } from "./state/chatReducer";
-import { getRoomIdFromUrl, loadOrCreateSenderId } from "./state/identity";
+import { fetchCurrentUser, getRoomIdFromUrl } from "./state/identity";
+import type { CurrentUser } from "./state/identity";
 import type {
   LatencySample,
   WireEvent,
@@ -20,6 +21,8 @@ import { MessageList } from "./components/MessageList";
 import { Composer } from "./components/Composer";
 import { LatencyHUD } from "./components/LatencyHUD";
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+
 function makeTempId(): string {
   return `tmp-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -28,7 +31,23 @@ const MAX_SAMPLES = 200;
 
 export function App() {
   const roomId = useMemo(getRoomIdFromUrl, []);
-  const senderId = useMemo(() => loadOrCreateSenderId(roomId), [roomId]);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Auth gate: fetch identity on mount. Redirect to GitHub OAuth if unauthenticated.
+  useEffect(() => {
+    fetchCurrentUser().then((me) => {
+      if (me) {
+        setUser(me);
+        setAuthChecked(true);
+      } else {
+        setAuthChecked(true);
+        window.location.href = `${API_BASE}/oauth2/authorization/github`;
+      }
+    });
+  }, []);
+
+  const senderId = user?.login ?? "";
   const url = useMemo(() => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/ws/chat/${roomId}`;
@@ -37,12 +56,10 @@ export function App() {
   const [chat, dispatch] = useReducer(chatReducer, initialChatState);
   const [samples, setSamples] = useState<LatencySample[]>([]);
 
-  // Refs let us read state inside event callbacks without re-creating them
-  // every render, which would tear down the WebSocket.
   const senderIdRef = useRef(senderId);
+  useEffect(() => { senderIdRef.current = senderId; }, [senderId]);
+
   const offsetRef = useRef<number | null>(null);
-  // handlePong is stable (empty deps in useClockSync) but we store it in a ref
-  // so handleEvent never needs clock in its dependency array.
   const handlePongRef = useRef<(pong: WirePong) => void>(() => {});
 
   const pushSample = useCallback((s: LatencySample) => {
@@ -52,24 +69,18 @@ export function App() {
     });
   }, []);
 
-  // ── WebSocket and event dispatch ──────────────────────────────────────
   const handleEvent = useCallback(
     (event: WireEvent) => {
       switch (event.type) {
         case "msg": {
           dispatch({ kind: "ack", serverMsg: event, selfSenderId: senderIdRef.current });
 
-          // Latency sample: was this our own echo, or a peer's message?
           if (event.senderId === senderIdRef.current && event.tempId !== null) {
-            // self round-trip: now - clientSendTs (we know our own clock).
-            // Skip history replays (tempId === null) — their clientSendTs is stale.
             const rtt = Date.now() - event.clientSendTs;
             if (rtt >= 0 && rtt < 60000) {
               pushSample({ ms: rtt, kind: "self", at: Date.now() });
             }
           } else if (offsetRef.current !== null) {
-            // peer one-way: localNow - (serverRecvTs - offset)
-            // serverRecvTs is in server time; convert to local time then subtract.
             const serverRecvLocal = event.serverRecvTs - offsetRef.current;
             const peerMs = Date.now() - serverRecvLocal;
             if (peerMs >= 0 && peerMs < 60000) {
@@ -96,19 +107,15 @@ export function App() {
           break;
         case "hello":
         case "ping":
-          // Server-only events; ignore.
           break;
       }
     },
     [pushSample]
   );
 
-  const { state, send } = useWebSocket({ url, onEvent: handleEvent });
+  const { state, send } = useWebSocket({ url, onEvent: handleEvent, enabled: authChecked && !!senderId });
 
-  const sendPing = useCallback(
-    (ping: WirePing) => send(ping),
-    [send]
-  );
+  const sendPing = useCallback((ping: WirePing) => send(ping), [send]);
 
   const clock = useClockSync({
     roomId,
@@ -117,17 +124,11 @@ export function App() {
     connectionOpen: state.kind === "open",
   });
 
-  useEffect(() => {
-    offsetRef.current = clock.offsetMs;
-  }, [clock.offsetMs]);
+  useEffect(() => { offsetRef.current = clock.offsetMs; }, [clock.offsetMs]);
+  useEffect(() => { handlePongRef.current = clock.handlePong; }, [clock.handlePong]);
 
   useEffect(() => {
-    handlePongRef.current = clock.handlePong;
-  }, [clock.handlePong]);
-
-  // Send hello on reconnect so the server broadcasts presence and replays history.
-  useEffect(() => {
-    if (state.kind === "open") {
+    if (state.kind === "open" && senderId) {
       const hello: WireHello = { type: "hello", roomId, senderId };
       send(hello);
     }
@@ -186,7 +187,6 @@ export function App() {
     send(evt);
   }, [roomId, senderId, send]);
 
-  // Compact HUD value for the top bar
   const compactHud = useMemo(() => {
     const selfP50 = (() => {
       const subset = samples.filter((s) => s.kind === "self").map((s) => s.ms);
@@ -196,6 +196,11 @@ export function App() {
     })();
     return selfP50 == null ? null : `${selfP50}ms p50`;
   }, [samples]);
+
+  // Show loading state while auth check is in flight.
+  if (!authChecked) {
+    return <div className="app" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>Signing in…</div>;
+  }
 
   return (
     <div className="app">

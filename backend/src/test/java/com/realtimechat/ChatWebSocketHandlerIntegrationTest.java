@@ -3,6 +3,8 @@ package com.realtimechat;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
@@ -20,57 +22,139 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(TestAuthWebFilter.class)
 class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
-    // ── Tests ─────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private ReactorNettyWebSocketClient client() {
+        return new ReactorNettyWebSocketClient();
+    }
+
+    // ── Core message exchange ─────────────────────────────────────────────────
 
     @Test
     void twoClientsExchangeMessage() throws Exception {
-        WebSocketClient clientA = new ReactorNettyWebSocketClient();
-        WebSocketClient clientB = new ReactorNettyWebSocketClient();
         URI uri = uri("exchange-test");
-
         List<String> receivedByB = new CopyOnWriteArrayList<>();
 
-        Disposable bSession = clientB.execute(uri, session ->
+        // clientB authenticates as "bob"
+        Disposable bSession = client().execute(uri, authHeaders("bob"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(receivedByB::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(receivedByB)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
-        clientA.execute(uri, session ->
+        // clientA authenticates as "alice", sends a message
+        client().execute(uri, authHeaders("alice"), session ->
                 Mono.fromCallable(() -> {
-                            Message m = new Message(null, "tmp-1", "exchange-test", "userA", "hello B", 1000L, 0L);
+                            // senderId in the wire is ignored — server stamps "alice" from principal
+                            Message m = new Message(null, "tmp-1", "exchange-test", "ignored", "hello B", 1000L, 0L);
                             return json.writeValueAsString(m);
                         })
                         .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
                         .then()
         ).block(Duration.ofSeconds(5));
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        // Message must be echoed with server-stamped senderId="alice", not "ignored"
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(receivedByB)
-                        .anyMatch(s -> s.contains("hello B") && s.contains("\"type\":\"msg\"")));
+                        .anyMatch(s -> s.contains("hello B")
+                                && s.contains("\"type\":\"msg\"")
+                                && s.contains("\"senderId\":\"alice\"")));
 
         bSession.dispose();
     }
 
     @Test
-    void pingReceivesPongWithThreeTimestamps() throws Exception {
-        WebSocketClient client = new ReactorNettyWebSocketClient();
-        URI uri = uri("ping-test");
-
+    void serverStampsSenderIdFromPrincipalNotWirePayload() throws Exception {
+        URI uri = uri("senderid-stamp-test");
         List<String> received = new CopyOnWriteArrayList<>();
 
-        client.execute(uri, session ->
+        Disposable observer = client().execute(uri, authHeaders("observer"), session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(received::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(received)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Send a message claiming to be "victim" — server must ignore and stamp "attacker"
+        client().execute(uri, authHeaders("attacker"), session ->
                 Mono.fromCallable(() -> {
-                            Ping ping = new Ping("ping-test", "userA", 9999L);
+                            Message m = new Message(null, "tmp-spoof", "senderid-stamp-test",
+                                    "victim", "impersonated", 1000L, 0L);
+                            return json.writeValueAsString(m);
+                        })
+                        .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
+                        .then()
+        ).block(Duration.ofSeconds(5));
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(received)
+                        .anyMatch(s -> s.contains("impersonated")
+                                && s.contains("\"senderId\":\"attacker\"")
+                                && !s.contains("\"senderId\":\"victim\"")));
+
+        observer.dispose();
+    }
+
+    @Test
+    void rateLimitDropsExcessMessages() throws Exception {
+        URI uri = uri("ratelimit-test");
+        List<String> received = new CopyOnWriteArrayList<>();
+
+        Disposable observer = client().execute(uri, authHeaders("watcher"), session ->
+                session.receive()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .doOnNext(received::add)
+                        .then()
+        ).subscribe();
+
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(received)
+                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
+
+        // Send 30 messages as fast as possible; at 3 msg/sec only a few should go through
+        client().execute(uri, authHeaders("spammer"), session -> {
+            Mono<Void> sends = Mono.empty();
+            for (int i = 0; i < 30; i++) {
+                final int idx = i;
+                sends = sends.then(Mono.fromCallable(() -> {
+                            Message m = new Message(null, "tmp-" + idx, "ratelimit-test",
+                                    "spammer", "msg-" + idx, 1000L, 0L);
+                            return json.writeValueAsString(m);
+                        })
+                        .flatMap(payload -> session.send(Mono.just(session.textMessage(payload)))));
+            }
+            return sends;
+        }).block(Duration.ofSeconds(5));
+
+        Thread.sleep(500);
+
+        // With 3 msg/sec rate limit, only a small fraction of 30 should arrive
+        long msgCount = received.stream().filter(s -> s.contains("\"type\":\"msg\"")).count();
+        assertThat(msgCount).isLessThan(10);
+
+        observer.dispose();
+    }
+
+    @Test
+    void pingReceivesPongWithThreeTimestamps() throws Exception {
+        URI uri = uri("ping-test");
+        List<String> received = new CopyOnWriteArrayList<>();
+
+        client().execute(uri, authHeaders("pinger"), session ->
+                Mono.fromCallable(() -> {
+                            Ping ping = new Ping("ping-test", "pinger", 9999L);
                             return json.writeValueAsString(ping);
                         })
                         .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
@@ -90,37 +174,31 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
     @Test
     void presenceCountIncrementsOnJoinAndDecrementsOnLeave() {
-        WebSocketClient clientA = new ReactorNettyWebSocketClient();
-        WebSocketClient clientB = new ReactorNettyWebSocketClient();
         URI uri = uri("presence-test");
-
         List<String> receivedByA = new CopyOnWriteArrayList<>();
 
-        Disposable aSession = clientA.execute(uri, session ->
+        Disposable aSession = client().execute(uri, authHeaders("userA"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(receivedByA::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(receivedByA)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"") && s.contains("\"connected\":1")));
 
-        Disposable bSession = clientB.execute(uri, session ->
+        Disposable bSession = client().execute(uri, authHeaders("userB"), session ->
                 session.receive().map(WebSocketMessage::getPayloadAsText).then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(receivedByA)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"") && s.contains("\"connected\":2")));
 
         bSession.dispose();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(
                         receivedByA.stream()
                                 .filter(s -> s.contains("\"type\":\"presence\"") && s.contains("\"connected\":1"))
@@ -132,12 +210,10 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
     @Test
     void helloTriggersPresenceBroadcast() {
-        WebSocketClient client = new ReactorNettyWebSocketClient();
         URI uri = uri("hello-test");
-
         List<String> received = new CopyOnWriteArrayList<>();
 
-        client.execute(uri, session ->
+        client().execute(uri, authHeaders("hello-user"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(received::add)
@@ -146,7 +222,7 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
                         .doFirst(() ->
                                 Mono.delay(Duration.ofMillis(100))
                                         .then(Mono.fromCallable(() ->
-                                                json.writeValueAsString(new Hello("hello-test", "userA"))))
+                                                json.writeValueAsString(new Hello("hello-test", "hello-user"))))
                                         .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
                                         .subscribe()
                         )
@@ -159,242 +235,163 @@ class ChatWebSocketHandlerIntegrationTest extends AbstractChatWebSocketTest {
 
     @Test
     void messagesAreReplayedOnJoin() throws Exception {
-        WebSocketClient sender = new ReactorNettyWebSocketClient();
-        WebSocketClient replayer = new ReactorNettyWebSocketClient();
         URI uri = uri("replay-test");
-
-        // Send a message and wait for it to be broadcast (confirms DB write is in-flight).
         List<String> senderReceived = new CopyOnWriteArrayList<>();
-        Disposable senderSession = sender.execute(uri, session ->
+
+        Disposable senderSession = client().execute(uri, authHeaders("alice"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(senderReceived::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(senderReceived)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
-        sender.execute(uri, session ->
+        client().execute(uri, authHeaders("alice"), session ->
                 Mono.fromCallable(() -> {
                             Message m = new Message(null, "tmp-replay", "replay-test",
-                                    "userA", "replay-me", 5000L, 0L);
+                                    "alice", "replay-me", 5000L, 0L);
                             return json.writeValueAsString(m);
                         })
                         .flatMap(payload -> session.send(Mono.just(session.textMessage(payload))))
                         .then()
         ).block(Duration.ofSeconds(5));
 
-        // Wait for broadcast to confirm the message was processed (and DB write is in-flight).
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(senderReceived)
                         .anyMatch(s -> s.contains("replay-me")));
 
         senderSession.dispose();
-
-        // Give the async DB write time to complete before the replayer joins.
-        // A plain sleep avoids calling .block() on a reactor chain from an Awaitility
-        // thread, which can starve the shared Netty event loop in the full test suite.
-        // 2000ms provides headroom for loaded CI runners and Testcontainers cold-start.
         Thread.sleep(2000);
 
-        // A new client joining the same room should receive the message from history.
         List<String> replayReceived = new CopyOnWriteArrayList<>();
-        Disposable replaySession = replayer.execute(uri, session ->
+        Disposable replaySession = client().execute(uri, authHeaders("bob"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(replayReceived::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(replayReceived)
                         .anyMatch(s -> s.contains("replay-me") && s.contains("\"type\":\"msg\"")));
 
         replaySession.dispose();
     }
 
-    @Test
-    void typingStartAndStopAreBroadcastToOtherClients() throws Exception {
-        WebSocketClient sender = new ReactorNettyWebSocketClient();
-        WebSocketClient observer = new ReactorNettyWebSocketClient();
-        URI uri = uri("typing-test");
+    // ── Typing tests ──────────────────────────────────────────────────────────
 
+    @Test
+    void typingStartBroadcastsWithPrincipalSenderIdNotWireValue() throws Exception {
+        URI uri = uri("typing-principal-test");
         List<String> observed = new CopyOnWriteArrayList<>();
 
-        Disposable observerSession = observer.execute(uri, session ->
+        Disposable observerSession = client().execute(uri, authHeaders("observer"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(observed::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
-        // Send typing_start, then typing_stop.
-        sender.execute(uri, session ->
+        // Wire senderId is "spoofed" — server must use "real-user" from the principal
+        client().execute(uri, authHeaders("real-user"), session ->
                 Mono.fromCallable(() -> json.writeValueAsString(
-                                new TypingStart("typing-test", "userA")))
+                                new TypingStart("typing-principal-test", "spoofed")))
                         .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
-                        .then(Mono.delay(Duration.ofMillis(100)))
-                        .then(Mono.fromCallable(() -> json.writeValueAsString(
-                                        new TypingStop("typing-test", "userA")))
-                                .flatMap(p -> session.send(Mono.just(session.textMessage(p)))))
                         .then()
         ).block(Duration.ofSeconds(5));
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
-                .untilAsserted(() -> {
-                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_start\"")
-                            && s.contains("\"senderId\":\"userA\""));
-                    assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
-                            && s.contains("\"senderId\":\"userA\""));
-                });
+        Awaitility.await().atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertThat(observed)
+                        .anyMatch(s -> s.contains("\"type\":\"typing_start\"")
+                                && s.contains("\"senderId\":\"real-user\"")));
 
         observerSession.dispose();
     }
 
     @Test
     void ghostTypingIsCleanedUpWhenSenderDisconnects() throws Exception {
-        WebSocketClient typer = new ReactorNettyWebSocketClient();
-        WebSocketClient observer = new ReactorNettyWebSocketClient();
         URI uri = uri("ghost-typing-test");
-
         List<String> observed = new CopyOnWriteArrayList<>();
 
-        Disposable observerSession = observer.execute(uri, session ->
+        Disposable observerSession = client().execute(uri, authHeaders("observer"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(observed::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
-        // Typer connects, sends typing_start, then disconnects without sending typing_stop.
-        Disposable typerSession = typer.execute(uri, session ->
+        Disposable typerSession = client().execute(uri, authHeaders("typer"), session ->
                 Mono.fromCallable(() -> json.writeValueAsString(
-                                new TypingStart("ghost-typing-test", "typerA")))
+                                new TypingStart("ghost-typing-test", "typer")))
                         .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"typing_start\"")
-                                && s.contains("\"senderId\":\"typerA\"")));
+                                && s.contains("\"senderId\":\"typer\"")));
 
-        // Disconnect without typing_stop — server must auto-emit typing_stop.
         typerSession.dispose();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
-                                && s.contains("\"senderId\":\"typerA\"")));
+                                && s.contains("\"senderId\":\"typer\"")));
 
         observerSession.dispose();
     }
 
     @Test
-    void typingStartWithBlankSenderIdIsDropped() throws Exception {
-        WebSocketClient sender = new ReactorNettyWebSocketClient();
-        WebSocketClient observer = new ReactorNettyWebSocketClient();
-        URI uri = uri("typing-blank-id-test");
-
+    void typingStopClearsIndicatorRegardlessOfWireSenderId() throws Exception {
+        // Regression: blank-senderId TypingStop used to leave ghost typing.
+        // In Stage 4, server uses the stored principal senderId — wire value is irrelevant.
+        URI uri = uri("typing-stop-principal-test");
         List<String> observed = new CopyOnWriteArrayList<>();
 
-        Disposable observerSession = observer.execute(uri, session ->
+        Disposable observerSession = client().execute(uri, authHeaders("observer"), session ->
                 session.receive()
                         .map(WebSocketMessage::getPayloadAsText)
                         .doOnNext(observed::add)
                         .then()
         ).subscribe();
 
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> assertThat(observed)
                         .anyMatch(s -> s.contains("\"type\":\"presence\"")));
 
-        // Send TypingStart with blank senderId — server guard at ChatWebSocketHandler:179 must drop it.
-        sender.execute(uri, session ->
-                Mono.fromCallable(() -> json.writeValueAsString(
-                                new TypingStart("typing-blank-id-test", "")))
-                        .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
-                        .then()
-        ).block(Duration.ofSeconds(5));
-
-        Thread.sleep(300);
-
-        assertThat(observed)
-                .noneMatch(s -> s.contains("\"type\":\"typing_start\""));
-
-        observerSession.dispose();
-    }
-
-    @Test
-    void typingStopWithBlankSenderIdAfterTypingStartClearsIndicator() throws Exception {
-        // Regression test for: blank-senderId TypingStop removes session from typingBySession
-        // but previously skipped room.emit, leaving ghost typing in all peers. The fix uses
-        // the server-stored senderId (from typingBySession) instead of the client-supplied one.
-        WebSocketClient typer = new ReactorNettyWebSocketClient();
-        WebSocketClient observer = new ReactorNettyWebSocketClient();
-        URI uri = uri("typing-blank-stop-test");
-
-        List<String> observed = new CopyOnWriteArrayList<>();
-
-        Disposable observerSession = observer.execute(uri, session ->
-                session.receive()
-                        .map(WebSocketMessage::getPayloadAsText)
-                        .doOnNext(observed::add)
-                        .then()
-        ).subscribe();
-
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
-                .untilAsserted(() -> assertThat(observed)
-                        .anyMatch(s -> s.contains("\"type\":\"presence\"")));
-
-        // Shutdown signal: holds the typer session open until we explicitly release it.
-        // This ensures typing_stop arrives via the blank-senderId handler (the code under test),
-        // not via the doFinally ghost-typing cleanup that fires on disconnect.
         Sinks.One<Void> shutdownSignal = Sinks.one();
 
-        // Typer sends TypingStart with valid senderId, then TypingStop with blank senderId.
-        // Session stays open (via shutdownSignal) so doFinally cannot race the TypingStop handler.
-        Disposable typerSession = typer.execute(uri, session ->
+        Disposable typerSession = client().execute(uri, authHeaders("typer"), session ->
                 Mono.fromCallable(() -> json.writeValueAsString(
-                                new TypingStart("typing-blank-stop-test", "typerA")))
+                                new TypingStart("typing-stop-principal-test", "typer")))
                         .flatMap(p -> session.send(Mono.just(session.textMessage(p))))
                         .then(Mono.delay(Duration.ofMillis(100)))
+                        // Send TypingStop with blank wire senderId — server must still emit stop with "typer"
                         .then(Mono.fromCallable(() -> json.writeValueAsString(
-                                        new TypingStop("typing-blank-stop-test", "")))
+                                        new TypingStop("typing-stop-principal-test", "")))
                                 .flatMap(p -> session.send(Mono.just(session.textMessage(p)))))
                         .then(shutdownSignal.asMono())
                         .then()
         ).subscribe();
 
-        // Observer must see typing_start and typing_stop while typer session is still open —
-        // proving typing_stop came from the blank-senderId handler, not disconnect cleanup.
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(5))
+        Awaitility.await().atMost(Duration.ofSeconds(5))
                 .untilAsserted(() -> {
                     assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_start\"")
-                            && s.contains("\"senderId\":\"typerA\""));
+                            && s.contains("\"senderId\":\"typer\""));
                     assertThat(observed).anyMatch(s -> s.contains("\"type\":\"typing_stop\"")
-                            && s.contains("\"senderId\":\"typerA\""));
+                            && s.contains("\"senderId\":\"typer\""));
                 });
 
         shutdownSignal.tryEmitEmpty();
