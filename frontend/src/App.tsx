@@ -20,8 +20,7 @@ import { ConnectionStrip } from "./components/ConnectionStrip";
 import { MessageList } from "./components/MessageList";
 import { Composer } from "./components/Composer";
 import { LatencyHUD } from "./components/LatencyHUD";
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { API_BASE } from "./config";
 
 function makeTempId(): string {
   return `tmp-${Math.random().toString(36).slice(2, 10)}`;
@@ -33,18 +32,21 @@ export function App() {
   const roomId = useMemo(getRoomIdFromUrl, []);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [authError, setAuthError] = useState(false);
 
-  // Auth gate: fetch identity on mount. Redirect to GitHub OAuth if unauthenticated.
+  // Auth gate: redirect to GitHub OAuth only on 401. Network/server errors show a retry
+  // prompt instead of bouncing an authenticated user through a full OAuth round-trip.
   useEffect(() => {
-    fetchCurrentUser().then((me) => {
-      if (me) {
-        setUser(me);
-        setAuthChecked(true);
-      } else {
-        setAuthChecked(true);
-        window.location.href = `${API_BASE}/oauth2/authorization/github`;
-      }
-    });
+    fetchCurrentUser()
+      .then((me) => {
+        if (me) {
+          setUser(me);
+        } else {
+          window.location.href = `${API_BASE}/oauth2/authorization/github`;
+        }
+      })
+      .catch(() => setAuthError(true))
+      .finally(() => setAuthChecked(true));
   }, []);
 
   const senderId = user?.login ?? "";
@@ -197,9 +199,11 @@ export function App() {
     return selfP50 == null ? null : `${selfP50}ms p50`;
   }, [samples]);
 
-  // Show loading state while auth check is in flight.
   if (!authChecked) {
     return <div className="app" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>Signing in…</div>;
+  }
+  if (authError) {
+    return <div className="app" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>Unable to reach the server. Please refresh.</div>;
   }
 
   return (
