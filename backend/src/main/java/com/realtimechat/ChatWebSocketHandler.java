@@ -15,6 +15,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.security.Principal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -49,6 +50,8 @@ import java.util.UUID;
 public class ChatWebSocketHandler implements WebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ChatWebSocketHandler.class);
+    private static final int MAX_MESSAGE_TEXT_LENGTH = 10_000;
+    private static final java.util.regex.Pattern ROOM_ID_PATTERN = java.util.regex.Pattern.compile("[a-z0-9-]+");
 
     private final RoomRegistry registry;
     private final ObjectMapper json;
@@ -174,6 +177,10 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                     log.warn("dropping blank-text message from session {}", session.getId());
                     yield Mono.empty();
                 }
+                if (m.text().length() > MAX_MESSAGE_TEXT_LENGTH) {
+                    log.warn("dropping oversized message ({} chars) from session {}", m.text().length(), session.getId());
+                    yield Mono.empty();
+                }
                 if (!rateLimiterService.tryAcquire(authenticatedUserId)) {
                     yield Mono.empty();
                 }
@@ -194,7 +201,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
                         stamped.clientSendTs(),
                         stamped.serverRecvTs(),
                         Instant.now()
-                )).subscribe(
+                )).timeout(Duration.ofSeconds(5)).subscribe(
                         saved -> {},
                         err -> log.warn("persist failed for message {}: {}", stamped.id(), err.getMessage())
                 );
@@ -238,7 +245,7 @@ public class ChatWebSocketHandler implements WebSocketHandler {
         int idx = path.lastIndexOf('/');
         if (idx < 0 || idx == path.length() - 1) return "lobby";
         String candidate = path.substring(idx + 1);
-        if (candidate.length() > 64 || !candidate.matches("[a-z0-9-]+")) return "lobby";
+        if (candidate.length() > 32 || !ROOM_ID_PATTERN.matcher(candidate).matches()) return "lobby";
         return candidate;
     }
 

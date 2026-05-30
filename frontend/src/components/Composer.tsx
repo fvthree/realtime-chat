@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { MAX_MESSAGE_TEXT_LENGTH } from "../config";
 
 export function Composer({
   roomId,
@@ -77,6 +78,7 @@ export function Composer({
         disabled={disabled}
         onChange={(e) => handleChange(e.target.value)}
         onKeyDown={handleKey}
+        maxLength={MAX_MESSAGE_TEXT_LENGTH}
         aria-label={`Message #${roomId}`}
         autoComplete="off"
         autoFocus
